@@ -46,6 +46,25 @@ public class CodeReviewOrchestratorTests
     }
 
     [Fact]
+    public async Task ReviewAsync_NonCSharpAiOnlyReviewableFile_SkipsRoslynButRunsAiReview()
+    {
+        var parsed = new List<ParsedFileDiff>
+        {
+            new("src/app.ts", new[] { new DiffAddedLine(1, "const x = 1;") })
+        };
+
+        var analyzer = new FakeStaticCodeAnalyzer();
+        var aiReviewer = new FakeAiCodeReviewer();
+
+        var orchestrator = CreateOrchestrator(new FakeDiffParser(parsed), analyzer, aiReviewer);
+
+        await orchestrator.ReviewAsync("some diff");
+
+        Assert.DoesNotContain("src/app.ts", analyzer.AnalyzedFileNames);
+        Assert.Contains("src/app.ts", aiReviewer.ReviewedFileNames);
+    }
+
+    [Fact]
     public async Task ReviewAsync_FileWithNoAddedLines_IsSkipped()
     {
         var parsed = new List<ParsedFileDiff>

@@ -1,14 +1,21 @@
+using System.Net;
 using System.Text.Json;
 using AI.CodeReview.Application.Ai;
 using AI.CodeReview.Domain;
 using AI.CodeReview.Infrastructure.Plugins;
 using Microsoft.Extensions.Logging;
+using Microsoft.SemanticKernel;
 
 namespace AI.CodeReview.Infrastructure.SemanticKernel;
 
 public sealed class SemanticKernelCodeReviewer : IAiCodeReviewer
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    // Retries transient failures (timeouts, network errors, 429/5xx) with a short backoff. Not
+    // retried: auth/bad-request errors (4xx other than 429) and malformed-JSON responses, since
+    // retrying those would just fail again the same way.
+    private static readonly TimeSpan[] RetryDelays = [TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(1)];
 
     private readonly CodeReviewPlugin _plugin;
     private readonly SecurityScanPlugin _securityScanPlugin;
@@ -32,14 +39,16 @@ public sealed class SemanticKernelCodeReviewer : IAiCodeReviewer
         var findings = await InvokeAndParseAsync(
             () => _plugin.AnalyzeCodeAsync(fileName, diffContext, cancellationToken),
             fileName,
-            "AI code review");
+            "AI code review",
+            cancellationToken);
 
         try
         {
             var securityFindings = await InvokeAndParseAsync(
                 () => _securityScanPlugin.ScanAsync(fileName, diffContext, cancellationToken),
                 fileName,
-                "Security scan");
+                "Security scan",
+                cancellationToken);
             findings.AddRange(securityFindings);
         }
         catch (AiReviewException ex)
@@ -55,12 +64,13 @@ public sealed class SemanticKernelCodeReviewer : IAiCodeReviewer
     private async Task<List<ReviewFinding>> InvokeAndParseAsync(
         Func<Task<string>> invokePlugin,
         string fileName,
-        string operationName)
+        string operationName,
+        CancellationToken cancellationToken)
     {
         string json;
         try
         {
-            json = await invokePlugin();
+            json = await InvokeWithRetryAsync(invokePlugin, fileName, operationName, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -119,4 +129,36 @@ public sealed class SemanticKernelCodeReviewer : IAiCodeReviewer
 
         return findings;
     }
+
+    private async Task<string> InvokeWithRetryAsync(
+        Func<Task<string>> invokePlugin,
+        string fileName,
+        string operationName,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await invokePlugin();
+            }
+            catch (Exception ex) when (attempt < RetryDelays.Length && IsTransient(ex))
+            {
+                _logger.LogWarning(
+                    ex, "{Operation} failed for {FileName} (attempt {Attempt}/{MaxAttempts}); retrying",
+                    operationName, fileName, attempt + 1, RetryDelays.Length + 1);
+                await Task.Delay(RetryDelays[attempt], cancellationToken);
+            }
+        }
+    }
+
+    private static bool IsTransient(Exception ex) => ex switch
+    {
+        HttpOperationException { StatusCode: HttpStatusCode.TooManyRequests or HttpStatusCode.RequestTimeout } => true,
+        HttpOperationException { StatusCode: { } status } => (int)status >= 500,
+        HttpOperationException { StatusCode: null } => true, // connection-level failure, no response received
+        HttpRequestException => true,
+        TimeoutException => true,
+        _ => false
+    };
 }

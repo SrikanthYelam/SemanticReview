@@ -1,3 +1,4 @@
+using AI.CodeReview.Api.Options;
 using AI.CodeReview.Application;
 using AI.CodeReview.Application.Analysis;
 using AI.CodeReview.Application.Diffing;
@@ -7,6 +8,7 @@ using AI.CodeReview.Infrastructure.Git;
 using AI.CodeReview.Infrastructure.Roslyn;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -33,6 +35,7 @@ builder.Services.AddSwaggerGen(options =>
 });
 
 builder.Services.AddProblemDetails();
+builder.Services.Configure<ApiAuthOptions>(builder.Configuration.GetSection(ApiAuthOptions.SectionName));
 
 builder.Services.AddSingleton<IDiffParser, UnifiedDiffParser>();
 builder.Services.AddSingleton<IStaticCodeAnalyzer, RoslynStaticAnalyzer>();
@@ -76,6 +79,32 @@ app.UseExceptionHandler(errorApp =>
 });
 
 app.UseHttpsRedirection();
+
+// API key auth: if Api:ApiKey is configured, every /api request must send a matching X-Api-Key
+// header. Left unconfigured (the default), the API stays open, as before — set Api:ApiKey before
+// exposing this beyond localhost, so an unauthenticated caller can't burn the AI provider budget.
+var apiAuthOptions = app.Services.GetRequiredService<IOptions<ApiAuthOptions>>().Value;
+if (!string.IsNullOrWhiteSpace(apiAuthOptions.ApiKey))
+{
+    app.Use(async (context, next) =>
+    {
+        if (context.Request.Path.StartsWithSegments("/api") &&
+            (!context.Request.Headers.TryGetValue("X-Api-Key", out var providedKey) ||
+             providedKey != apiAuthOptions.ApiKey))
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            await context.Response.WriteAsJsonAsync(new ProblemDetails
+            {
+                Title = "Unauthorized",
+                Detail = "A valid X-Api-Key header is required.",
+                Status = StatusCodes.Status401Unauthorized
+            });
+            return;
+        }
+
+        await next();
+    });
+}
 
 app.UseAuthorization();
 

@@ -9,6 +9,18 @@ namespace AI.CodeReview.Application;
 
 public sealed class CodeReviewOrchestrator : ICodeReviewService
 {
+    // AI-only review (no Roslyn) for common non-C# text/code file types. Extensions not listed
+    // here (binaries, lock files, generated output, etc.) are skipped entirely, same as before.
+    private static readonly HashSet<string> AiOnlyReviewExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".ts", ".tsx", ".js", ".jsx", ".py", ".java", ".go", ".rb", ".php",
+        ".razor", ".cshtml", ".sql", ".yml", ".yaml", ".json", ".html", ".css", ".scss"
+    };
+
+    // Bounds how many files' AI review calls run concurrently, so a large diff doesn't fan out
+    // unboundedly against the AI provider's rate limits.
+    private const int MaxConcurrentAiReviews = 4;
+
     private readonly IDiffParser _diffParser;
     private readonly IStaticCodeAnalyzer _staticCodeAnalyzer;
     private readonly IAiCodeReviewer _aiCodeReviewer;
@@ -57,11 +69,13 @@ public sealed class CodeReviewOrchestrator : ICodeReviewService
         _logger.LogInformation("Review started");
 
         var parsedFiles = _diffParser.Parse(diff);
-        var csharpFiles = parsedFiles
-            .Where(f => f.FileName.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) && f.AddedLines.Count > 0)
-            .ToList();
+        var changedFiles = parsedFiles.Where(f => f.AddedLines.Count > 0).ToList();
+        var csharpFiles = changedFiles.Where(f => IsCSharpFile(f.FileName)).ToList();
+        var aiOnlyFiles = changedFiles.Where(f => !IsCSharpFile(f.FileName) && IsAiOnlyReviewable(f.FileName)).ToList();
 
-        _logger.LogInformation("Diff parsed: {FileCount} C# file(s) with changes", csharpFiles.Count);
+        _logger.LogInformation(
+            "Diff parsed: {CSharpCount} C# file(s), {OtherCount} other reviewable file(s)",
+            csharpFiles.Count, aiOnlyFiles.Count);
 
         var allFindings = new List<ReviewFinding>();
 
@@ -75,21 +89,16 @@ public sealed class CodeReviewOrchestrator : ICodeReviewService
             var mappedRoslynFindings = roslynFindings.Select(f => MapToRealLineNumber(f, file.AddedLines)).ToList();
             _logger.LogInformation("Roslyn analysis of {FileName} produced {FindingCount} finding(s)", file.FileName, mappedRoslynFindings.Count);
             allFindings.AddRange(mappedRoslynFindings);
+        }
 
-            var diffContext = BuildDiffContext(file.AddedLines);
-            _logger.LogInformation("AI review started for {FileName}", file.FileName);
-            try
-            {
-                var aiFindings = await _aiCodeReviewer.ReviewAsync(file.FileName, diffContext, cancellationToken);
-                _logger.LogInformation("AI review completed for {FileName}: {FindingCount} finding(s)", file.FileName, aiFindings.Count);
-                allFindings.AddRange(aiFindings);
-            }
-            catch (AiReviewException ex)
-            {
-                // AI is a best-effort enhancement on top of the deterministic Roslyn findings —
-                // an unavailable/misconfigured AI provider degrades the review, it doesn't fail it.
-                _logger.LogWarning(ex, "AI review failed for {FileName}; continuing with deterministic findings only", file.FileName);
-            }
+        // AI review runs for C# files plus AI-only-reviewable non-C# files, in parallel (bounded)
+        // rather than one file at a time, since it's the slow, network-bound step of the pipeline.
+        using var aiConcurrencyLimiter = new SemaphoreSlim(MaxConcurrentAiReviews);
+        var aiResults = await Task.WhenAll(csharpFiles.Concat(aiOnlyFiles)
+            .Select(file => ReviewFileWithAiAsync(file, aiConcurrencyLimiter, cancellationToken)));
+        foreach (var result in aiResults)
+        {
+            allFindings.AddRange(result);
         }
 
         var findings = allFindings
@@ -104,6 +113,37 @@ public sealed class CodeReviewOrchestrator : ICodeReviewService
 
         return new CodeReviewResult(findings);
     }
+
+    private async Task<IReadOnlyList<ReviewFinding>> ReviewFileWithAiAsync(
+        ParsedFileDiff file, SemaphoreSlim concurrencyLimiter, CancellationToken cancellationToken)
+    {
+        await concurrencyLimiter.WaitAsync(cancellationToken);
+        try
+        {
+            var diffContext = BuildDiffContext(file.AddedLines);
+            _logger.LogInformation("AI review started for {FileName}", file.FileName);
+            var aiFindings = await _aiCodeReviewer.ReviewAsync(file.FileName, diffContext, cancellationToken);
+            _logger.LogInformation("AI review completed for {FileName}: {FindingCount} finding(s)", file.FileName, aiFindings.Count);
+            return aiFindings;
+        }
+        catch (AiReviewException ex)
+        {
+            // AI is a best-effort enhancement on top of the deterministic Roslyn findings —
+            // an unavailable/misconfigured AI provider degrades the review, it doesn't fail it.
+            _logger.LogWarning(ex, "AI review failed for {FileName}; continuing with deterministic findings only", file.FileName);
+            return Array.Empty<ReviewFinding>();
+        }
+        finally
+        {
+            concurrencyLimiter.Release();
+        }
+    }
+
+    private static bool IsCSharpFile(string fileName)
+        => fileName.EndsWith(".cs", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsAiOnlyReviewable(string fileName)
+        => AiOnlyReviewExtensions.Contains(Path.GetExtension(fileName));
 
     private static string BuildDiffContext(IReadOnlyList<DiffAddedLine> addedLines)
         => string.Join('\n', addedLines.Select(l => $"{l.LineNumber}: {l.Content}"));

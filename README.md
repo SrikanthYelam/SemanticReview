@@ -81,8 +81,17 @@ touching the orchestration logic.
 - AI-assisted review via Semantic Kernel + OpenAI, constrained to structured JSON output that
   maps directly onto the `Severity`/`ReviewCategory` domain enums — a general review pass plus a
   dedicated security-scan pass (hardcoded secrets, SQL/command injection, weak crypto, etc.).
+- AI-only review (no Roslyn) for changed files outside C# — TypeScript/JavaScript, Python, Java,
+  Go, Ruby, PHP, Razor/`.cshtml`, SQL, YAML, JSON, HTML, and CSS — so a diff that only touches
+  those files still gets reviewed instead of being silently skipped.
+- Per-file AI review calls run in parallel (bounded to 4 concurrent) instead of one file at a
+  time, so multi-file diffs review noticeably faster.
+- Transient AI provider failures (timeouts, connection errors, `429`/`5xx`) are retried
+  automatically with a short backoff before being treated as a failure for that file.
 - Findings from both sources are merged, deduplicated (same file/line/category), and sorted by
   severity, then file, then line.
+- Optional API key authentication — set `Api:ApiKey` and every `/api/*` request must send a
+  matching `X-Api-Key` header; unset (the default), the API stays open.
 - Strongly typed configuration (Options pattern) for AI provider settings — no `IConfiguration`
   scattered through the codebase, and no hard-coded API keys.
 - Global exception handling that never leaks stack traces, provider error details, or secrets to
@@ -227,6 +236,21 @@ GitHub token is configured, so private repos/commits return `404`), and GitHub's
 API rate limit of 60 requests/hour per IP** applies (returns `400` with a rate-limit message, not
 a raw GitHub error, if hit).
 
+### Authentication
+
+By default the API is open, same as before. To require an API key on every `/api/*` request, set
+`Api:ApiKey` (`appsettings`, user-secrets, or the `Api__ApiKey` environment variable) and send it
+back as the `X-Api-Key` header:
+
+```bash
+curl -X POST https://localhost:7004/api/reviews \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: <your key>" \
+  -d '{"gitUrl": "https://github.com/{owner}/{repo}/commit/{sha}"}'
+```
+
+A missing or incorrect key returns `401`. Leave `Api:ApiKey` empty/unset for local development.
+
 ## Example Response
 
 ```json
@@ -315,6 +339,30 @@ Logging__LogLevel__AI.CodeReview.Infrastructure.SemanticKernel.AiCallLoggingFilt
   One accepted tradeoff of running two independent AI passes over the same code: they can each
   flag the same underlying issue at slightly different line numbers, which the existing
   `(File, Line, Category)` dedupe won't catch (an exact-line match still dedupes fine).
+- **Non-C# files get AI-only review, gated by an extension allowlist, not a denylist** — Roslyn
+  is C#-specific, but the AI reviewer just needs diff text, so `CodeReviewOrchestrator` routes
+  changed files matching a small allowlist of common source/config extensions (TS/JS, Python,
+  Java, Go, Ruby, PHP, Razor, SQL, YAML, JSON, HTML, CSS) to the AI reviewer only. An allowlist
+  was chosen over "review anything non-C#" so binaries, lock files, and generated output stay
+  skipped, same as before.
+- **AI review calls run in parallel, bounded by a `SemaphoreSlim`** — the per-file loop used to
+  `await` each file's AI call in sequence, so review latency scaled linearly with file count.
+  Roslyn analysis (CPU-only, fast) still runs sequentially per file; only the AI calls (the
+  network-bound step) fan out, capped at 4 concurrent to stay within the AI provider's rate
+  limits. The final dedupe/sort is unaffected — Roslyn findings are still collected into
+  `allFindings` before the AI results are merged in, so Roslyn still wins a same-file/line/category
+  collision.
+- **Transient AI failures are retried before they're treated as a failure** — `HttpOperationException`
+  with a `429`/`5xx`/no-response status, plus `HttpRequestException`/`TimeoutException`, get up to
+  two retries with a short backoff inside `SemanticKernelCodeReviewer`. Non-transient failures
+  (auth errors, malformed JSON responses) are not retried, since retrying would just fail the same
+  way again; `AiReviewException` is still thrown (and still degrades gracefully, per-file) once
+  retries are exhausted.
+- **API key auth is opt-in, not required** — `ApiAuthOptions.ApiKey` defaults to empty, which
+  keeps the API open (matching the previous behavior and local dev). Setting it turns on a
+  request-path-scoped (`/api/*` only, so `/swagger` stays reachable) header check in `Program.cs`;
+  this is deliberately a minimal `X-Api-Key` comparison, not a full auth scheme, since the goal is
+  "stop an anonymous caller from burning the AI budget," not multi-user authorization.
 
 ## Future Improvements
 
