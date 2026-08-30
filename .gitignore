@@ -1,0 +1,19 @@
+## .NET
+bin/
+obj/
+*.user
+
+## Visual Studio / Rider / VS Code
+.vs/
+.idea/
+*.suo
+
+## Secrets — never commit real AI credentials
+appsettings.Development.json
+appsettings.*.local.json
+**/secrets.json
+.env
+
+## OS
+.DS_Store
+Thumbs.db

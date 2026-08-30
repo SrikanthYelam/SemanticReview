@@ -1,0 +1,27 @@
+diff --git a/src/OrderService.cs b/src/OrderService.cs
+index 1a2b3c4..5d6e7f8 100644
+--- a/src/OrderService.cs
++++ b/src/OrderService.cs
+@@ -12,6 +12,22 @@ public class OrderService
+     {
+         _repository = repository;
+     }
++
++    public Order GetOrder(int orderId)
++    {
++        // TODO: add caching here
++        var order = _repository.GetByIdAsync(orderId).Result;
++        return order;
++    }
++
++    public void CancelOrder(int orderId)
++    {
++        try
++        {
++            _repository.CancelAsync(orderId).Wait();
++        }
++        catch (Exception ex)
++        {
++        }
++    }
+ }

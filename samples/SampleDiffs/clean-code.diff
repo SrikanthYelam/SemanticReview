@@ -1,0 +1,24 @@
+diff --git a/src/DiscountCalculator.cs b/src/DiscountCalculator.cs
+index 3c4d5e6..7f8a9b0 100644
+--- a/src/DiscountCalculator.cs
++++ b/src/DiscountCalculator.cs
+@@ -5,4 +5,17 @@ public class DiscountCalculator
+     {
+         _minimumOrderTotal = minimumOrderTotal;
+     }
++
++    public decimal CalculateDiscount(decimal orderTotal, CustomerTier tier)
++    {
++        if (orderTotal < _minimumOrderTotal)
++        {
++            return 0m;
++        }
++
++        return tier switch
++        {
++            CustomerTier.Gold => orderTotal * 0.15m,
++            CustomerTier.Silver => orderTotal * 0.10m,
++            _ => orderTotal * 0.05m
++        };
++    }
+ }
