@@ -2,7 +2,9 @@
 
 An AI-powered code review API for C# that combines a Large Language Model (via Microsoft
 Semantic Kernel) with deterministic static analysis (via Roslyn) to review git diffs and return
-structured, actionable findings.
+structured, actionable findings — with an opt-in path to post those findings straight back to a
+GitHub pull request as a review, either on demand or automatically via the included GitHub
+Actions workflow.
 
 ## Overview
 
