@@ -67,8 +67,6 @@ src/
 tests/
   AI.CodeReview.Tests/           xUnit tests for the diff parser, Roslyn analyzer, and
                                   orchestrator (with hand-written fakes for the AI/analysis layers)
-samples/
-  SampleDiffs/                   Three realistic sample diffs (buggy, performance, clean)
 .github/
   workflows/review.yml           Self-contained CI job: builds+runs the API, then has it review
                                   and post comments on the pull request that triggered the run
@@ -222,13 +220,10 @@ curl -X POST https://localhost:7004/api/reviews \
 EOF
 ```
 
-Each sample under `samples/SampleDiffs/` has two files: the `.diff` itself (a realistic unified
-diff, useful as-is with real git tooling) and a matching `.request.json` (the exact same content
-pre-escaped into a `{"diff": "..."}` body). Pasting a `.diff` file's raw content directly into a
-JSON field — e.g. into Swagger UI's "Try it out" box — will fail with a JSON parse error, because
-literal newlines aren't valid inside a JSON string; use the `.request.json` file's contents
-instead, or generate the escaped body yourself (`node -e "console.log(JSON.stringify({diff:
-require('fs').readFileSync('samples/SampleDiffs/buggy-code.diff','utf8')}))"`).
+Pasting a raw `.diff` file's content directly into a JSON field — e.g. into Swagger UI's "Try it
+out" box — will fail with a JSON parse error, because literal newlines aren't valid inside a JSON
+string; escape it first (e.g. `node -e "console.log(JSON.stringify({diff:
+require('fs').readFileSync('path/to/your.diff','utf8')}))"`) or use `gitUrl` instead.
 
 ### Reviewing a GitHub commit or PR directly
 
