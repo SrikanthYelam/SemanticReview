@@ -362,6 +362,19 @@ Option 1 is the normal shape for "one review service, many repos use it" and is 
 async/event-driven pipeline under Future Improvements is aimed at; option 2 avoids hosting
 anything but doesn't scale past a repo or two before the rebuild cost adds up.
 
+**Where GitHub webhooks fit in**: a raw webhook is a natural evolution of option 1, not option 2.
+Option 2 already relies on GitHub Actions' own `pull_request` trigger, which *is* a fully-managed
+webhook — GitHub runs the listener and the compute for you, so a raw webhook adds nothing there.
+Option 1, once hosted, could instead receive a webhook directly (e.g. `POST /api/webhooks/github`)
+instead of every consuming repo needing its own tiny curl-the-API workflow — but that's more than
+just adding a route: it needs signature verification (`X-Hub-Signature-256` against a shared
+secret, so an arbitrary caller can't forge review requests), a token story that doesn't depend on
+Actions' auto-injected `GITHUB_TOKEN` (a **GitHub App**, installed per repo, is the standard
+answer — it issues short-lived tokens scoped to just that installation), and fast acknowledgment
+of the webhook before doing the actual review — which is exactly what the async/event-driven
+pipeline above is for, since a full AI review can easily exceed how long GitHub waits for a
+webhook response.
+
 ## Example Response
 
 ```json
