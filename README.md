@@ -309,11 +309,30 @@ A missing or incorrect key returns `401`. Leave `Api:ApiKey` empty/unset for loc
 ## Continuous Integration (GitHub Actions)
 
 `.github/workflows/review.yml` runs on every `pull_request` (opened/synchronize/reopened) against
-this repo. It's self-contained rather than pointing at a hosted instance: the job builds this
-solution, starts the API on `localhost` inside the same runner, then calls it with the triggering
-PR's own URL and `postToGitHub: true`, using the workflow's own `secrets.GITHUB_TOKEN` — so this
-repo's own pull requests get reviewed by the tool itself, with no deployment step required. The
-workflow declares `permissions: pull-requests: write` for that token to be allowed to post.
+this repo. It's self-contained rather than pointing at a hosted instance — nothing is deployed;
+the API only exists for the lifetime of one CI job:
+
+1. A fresh, ephemeral `ubuntu-latest` runner builds the solution (`dotnet build`).
+2. The API is started in the background, bound to `ASPNETCORE_URLS=http://localhost:5099`
+   (`dotnet run --no-launch-profile ...` — the flag matters: without it, `dotnet run` applies
+   `launchSettings.json`'s own port instead of the one set for CI).
+3. A readiness loop polls that local endpoint until it responds. This works because a job's steps
+   are separate shell invocations on the *same* runner, not separate machines — the backgrounded
+   process from step 2 is still alive and reachable when later steps run.
+4. The final step calls that same `localhost` endpoint with the triggering PR's own URL,
+   `postToGitHub: true`, and the workflow's own `secrets.GITHUB_TOKEN` — so this repo's own pull
+   requests get reviewed by the tool itself, with no deployment step required.
+5. The runner (and the API process with it) is destroyed when the job ends; nothing persists
+   between runs — every PR event gets a completely fresh instance.
+
+The workflow declares `permissions: pull-requests: write` for that token to be allowed to post.
+
+**Rate limits**: the two GitHub API calls involved are subject to different limits, since only one
+is authenticated — `GitHubDiffFetcher` (fetching the diff) uses no token (**60 requests/hour per
+IP**), while `GitHubReviewPublisher` (posting the review) uses `GITHUB_TOKEN` (**1,000
+requests/hour per repository**). The unauthenticated diff fetch is actually the tighter constraint
+even inside CI; the write-back stays cheap regardless of finding count, since it posts one review
+with all inline comments in a single call rather than one call per finding.
 
 **Known limitation**: GitHub only grants a **read-only** `GITHUB_TOKEN` to workflows triggered by
 a pull request from a fork, regardless of the `permissions` block above — this is a GitHub
@@ -321,6 +340,27 @@ security restriction on the token, not something this workflow can configure aro
 PR the review still runs and findings are still logged in the workflow output, but the "post to
 GitHub" call will fail with `403` (reported via `gitHubPublish.posted: false`, same as any other
 publish failure) rather than posting inline comments.
+
+### Using this to review a different repository
+
+`review.yml` as written only watches **this** repo's own pull requests — it builds and runs this
+API inside the CI job, so a PR opened in some other repo won't trigger it. To get another repo's
+PRs reviewed the same way, drop a workflow into *that* repo instead, in one of two shapes:
+
+1. **Point at a hosted instance** — deploy this API somewhere persistent (a container, an App
+   Service, etc.) and give the other repo a small workflow that just `curl`s that URL with its own
+   `gitUrl`/`postToGitHub`/`gitHubToken`. The consuming repo's workflow stays tiny and doesn't need
+   to know anything about this codebase; the tradeoff is you now have a service to keep running and
+   pay for, rather than something that only exists for the duration of a CI job.
+2. **Cross-repo checkout, same self-contained idea** — the other repo's workflow checks out both
+   its own code and this repo (`actions/checkout` with `repository: SrikanthYelam/SemanticReview`
+   as a second step), builds this API from source inside its own job, and reviews itself — no
+   hosting required, at the cost of every consuming repo's CI rebuilding this whole solution on
+   every PR.
+
+Option 1 is the normal shape for "one review service, many repos use it" and is also what the
+async/event-driven pipeline under Future Improvements is aimed at; option 2 avoids hosting
+anything but doesn't scale past a repo or two before the rebuild cost adds up.
 
 ## Example Response
 
