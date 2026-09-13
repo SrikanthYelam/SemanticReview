@@ -11,11 +11,16 @@ namespace AI.CodeReview.Api.Controllers;
 public sealed class ReviewsController : ControllerBase
 {
     private readonly ICodeReviewService _codeReviewService;
+    private readonly IGitHubReviewPublisher _gitHubReviewPublisher;
     private readonly ILogger<ReviewsController> _logger;
 
-    public ReviewsController(ICodeReviewService codeReviewService, ILogger<ReviewsController> logger)
+    public ReviewsController(
+        ICodeReviewService codeReviewService,
+        IGitHubReviewPublisher gitHubReviewPublisher,
+        ILogger<ReviewsController> logger)
     {
         _codeReviewService = codeReviewService;
+        _gitHubReviewPublisher = gitHubReviewPublisher;
         _logger = logger;
     }
 
@@ -54,6 +59,22 @@ public sealed class ReviewsController : ControllerBase
                 title: "Invalid request");
         }
 
+        if (request.PostToGitHub && !hasGitUrl)
+        {
+            return Problem(
+                detail: "'postToGitHub' requires 'gitUrl' (a pull request URL); it cannot be used with a raw diff.",
+                statusCode: StatusCodes.Status400BadRequest,
+                title: "Invalid request");
+        }
+
+        if (request.PostToGitHub && string.IsNullOrWhiteSpace(request.GitHubToken))
+        {
+            return Problem(
+                detail: "'gitHubToken' is required when 'postToGitHub' is true.",
+                statusCode: StatusCodes.Status400BadRequest,
+                title: "Invalid request");
+        }
+
         try
         {
             var review = hasGitUrl
@@ -62,9 +83,29 @@ public sealed class ReviewsController : ControllerBase
 
             var findingsBySource = review.Findings.ToLookup(f => f.Source);
 
+            GitHubPublishResult? publishResult = null;
+            if (request.PostToGitHub)
+            {
+                try
+                {
+                    var reviewUrl = await _gitHubReviewPublisher.PublishReviewAsync(
+                        request.GitUrl!, request.GitHubToken!, review.Findings, cancellationToken);
+                    publishResult = new GitHubPublishResult(Posted: true, ReviewUrl: reviewUrl, Error: null);
+                }
+                catch (GitHubPublishException ex)
+                {
+                    // The review itself already succeeded — a failure to post it to GitHub (bad
+                    // token, PR not found, GitUrl was a commit not a PR) shouldn't discard the
+                    // findings, so this is reported alongside them rather than failing the request.
+                    _logger.LogWarning(ex, "Failed to publish review to GitHub");
+                    publishResult = new GitHubPublishResult(Posted: false, ReviewUrl: null, Error: ex.Message);
+                }
+            }
+
             var response = new ReviewResponse(
                 StaticAnalysisFindings: findingsBySource[FindingSource.StaticAnalysis].Select(ToFindingResponse).ToList(),
-                AiFindings: findingsBySource[FindingSource.Ai].Select(ToFindingResponse).ToList());
+                AiFindings: findingsBySource[FindingSource.Ai].Select(ToFindingResponse).ToList(),
+                GitHubPublish: publishResult);
 
             return Ok(response);
         }

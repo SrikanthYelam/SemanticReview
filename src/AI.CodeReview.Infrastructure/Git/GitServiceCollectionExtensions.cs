@@ -16,4 +16,15 @@ public static class GitServiceCollectionExtensions
 
         return services;
     }
+
+    public static IServiceCollection AddGitHubReviewPublishing(this IServiceCollection services)
+    {
+        services.AddHttpClient<IGitHubReviewPublisher, GitHubReviewPublisher>(client =>
+        {
+            client.BaseAddress = new Uri("https://api.github.com/");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("AI.CodeReview.Api");
+        });
+
+        return services;
+    }
 }

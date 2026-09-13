@@ -41,6 +41,7 @@ builder.Services.AddSingleton<IDiffParser, UnifiedDiffParser>();
 builder.Services.AddSingleton<IStaticCodeAnalyzer, RoslynStaticAnalyzer>();
 builder.Services.AddSemanticKernelServices(builder.Configuration);
 builder.Services.AddGitDiffFetching();
+builder.Services.AddGitHubReviewPublishing();
 builder.Services.AddScoped<ICodeReviewService, CodeReviewOrchestrator>();
 
 var app = builder.Build();

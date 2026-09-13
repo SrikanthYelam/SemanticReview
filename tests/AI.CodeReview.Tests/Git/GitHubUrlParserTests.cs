@@ -46,4 +46,42 @@ public class GitHubUrlParserTests
         Assert.False(success);
         Assert.Null(request);
     }
+
+    [Fact]
+    public void TryParsePullRequest_PullRequestUrl_ResolvesOwnerRepoAndNumber()
+    {
+        var success = GitHubUrlParser.TryParsePullRequest("https://github.com/dotnet/runtime/pull/12345", out var pullRequest);
+
+        Assert.True(success);
+        Assert.Equal("dotnet", pullRequest!.Owner);
+        Assert.Equal("runtime", pullRequest.Repo);
+        Assert.Equal(12345, pullRequest.Number);
+    }
+
+    [Fact]
+    public void TryParsePullRequest_PullRequestUrlWithTrailingSegment_StillResolves()
+    {
+        var success = GitHubUrlParser.TryParsePullRequest("https://github.com/dotnet/runtime/pull/12345/files", out var pullRequest);
+
+        Assert.True(success);
+        Assert.Equal(12345, pullRequest!.Number);
+    }
+
+    [Fact]
+    public void TryParsePullRequest_CommitUrl_ReturnsFalse()
+    {
+        var success = GitHubUrlParser.TryParsePullRequest("https://github.com/dotnet/runtime/commit/abc1234", out var pullRequest);
+
+        Assert.False(success);
+        Assert.Null(pullRequest);
+    }
+
+    [Fact]
+    public void TryParsePullRequest_NonGitHubUrl_ReturnsFalse()
+    {
+        var success = GitHubUrlParser.TryParsePullRequest("https://gitlab.com/owner/repo/pull/1", out var pullRequest);
+
+        Assert.False(success);
+        Assert.Null(pullRequest);
+    }
 }

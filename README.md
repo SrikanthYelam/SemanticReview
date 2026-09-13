@@ -45,6 +45,8 @@ flowchart TD
     D --> F[Finding Aggregator<br/>merge + dedupe + sort]
     E --> F
     F --> G[CodeReview Result]
+    G -->|postToGitHub=true| R[GitHubReviewPublisher]
+    R -->|inline comments + summary| PR[GitHub Pull Request]
 ```
 
 The solution follows clean architecture:
@@ -59,13 +61,17 @@ src/
                                   — depends only on Domain and abstractions
   AI.CodeReview.Infrastructure/  UnifiedDiffParser, RoslynStaticAnalyzer, Semantic Kernel
                                   integration (Kernel setup, CodeReviewPlugin + SecurityScanPlugin,
-                                  prompt templates), GitHubDiffFetcher (diff for a commit/PR URL)
+                                  prompt templates), GitHubDiffFetcher (diff for a commit/PR URL),
+                                  GitHubReviewPublisher (posts findings back as a PR review)
   AI.CodeReview.Api/              ASP.NET Core Web API — POST /api/reviews, DI wiring, Swagger
 tests/
   AI.CodeReview.Tests/           xUnit tests for the diff parser, Roslyn analyzer, and
                                   orchestrator (with hand-written fakes for the AI/analysis layers)
 samples/
   SampleDiffs/                   Three realistic sample diffs (buggy, performance, clean)
+.github/
+  workflows/review.yml           Self-contained CI job: builds+runs the API, then has it review
+                                  and post comments on the pull request that triggered the run
 ```
 
 Application depends only on Domain and its own abstractions — never on Semantic Kernel, Roslyn,
@@ -90,6 +96,12 @@ touching the orchestration logic.
   automatically with a short backoff before being treated as a failure for that file.
 - Findings from both sources are merged, deduplicated (same file/line/category), and sorted by
   severity, then file, then line.
+- Opt-in GitHub write-back — set `postToGitHub` (with a `gitHubToken`) on a PR-URL request and
+  findings are posted back as a single GitHub review: findings with a line number become inline
+  comments, findings without one are listed in the review's summary instead of being dropped.
+- A self-contained GitHub Actions workflow (`.github/workflows/review.yml`) builds and runs this
+  API inside the CI job itself and has it review (and post comments on) the pull request that
+  triggered the run — no hosted instance required.
 - Optional API key authentication — set `Api:ApiKey` and every `/api/*` request must send a
   matching `X-Api-Key` header; unset (the default), the API stays open.
 - Strongly typed configuration (Options pattern) for AI provider settings — no `IConfiguration`
@@ -236,6 +248,47 @@ GitHub token is configured, so private repos/commits return `404`), and GitHub's
 API rate limit of 60 requests/hour per IP** applies (returns `400` with a rate-limit message, not
 a raw GitHub error, if hit).
 
+### Posting findings back to GitHub
+
+Add `postToGitHub: true` and `gitHubToken` to a `gitUrl` request (the `gitUrl` must be a **pull
+request** URL, not a commit — there's no PR to attach a review to for a bare commit) and the
+computed findings are posted back as a single GitHub review, in the same request:
+
+```bash
+curl -X POST https://localhost:7004/api/reviews \
+  -H "Content-Type: application/json" \
+  -d '{
+    "gitUrl": "https://github.com/{owner}/{repo}/pull/{number}",
+    "postToGitHub": true,
+    "gitHubToken": "<a token with permission to review this PR>"
+  }'
+```
+
+Findings with a line number become inline comments on that file/line; findings without one (line
+number couldn't be determined) are listed in the review's summary instead of being silently
+dropped. The token is used only for that one call and is never stored or logged — bring your own
+per request (e.g. a GitHub Actions workflow's own `${{ secrets.GITHUB_TOKEN }}`) rather than
+configuring a single server-side token with write access to every repo you might review.
+
+**Live example**: [SrikanthYelam/AlgoLens-AI-Powered-Algorithm-Visualizer#1](https://github.com/SrikanthYelam/AlgoLens-AI-Powered-Algorithm-Visualizer/pull/1)
+is a real pull request reviewed with `postToGitHub: true` against this API running locally — the
+posted review has inline comments spanning Exception Handling, Security, Maintainability, and
+Code Quality findings across multiple changed files.
+
+`postToGitHub: true` without `gitUrl`, or without `gitHubToken`, returns `400` (nothing to post
+to, or no credential to post with). A failure in the *publish* step itself — bad/expired token,
+PR not found, `gitUrl` turned out to be a commit not a PR — does **not** fail the request: the
+review was already computed successfully, so it's still returned with `200`, alongside a
+`gitHubPublish` field describing what happened:
+
+```json
+{
+  "staticAnalysisFindings": [ /* ... */ ],
+  "aiFindings": [ /* ... */ ],
+  "gitHubPublish": { "posted": false, "reviewUrl": null, "error": "GitHub rejected the provided token (401 Unauthorized)." }
+}
+```
+
 ### Authentication
 
 By default the API is open, same as before. To require an API key on every `/api/*` request, set
@@ -250,6 +303,22 @@ curl -X POST https://localhost:7004/api/reviews \
 ```
 
 A missing or incorrect key returns `401`. Leave `Api:ApiKey` empty/unset for local development.
+
+## Continuous Integration (GitHub Actions)
+
+`.github/workflows/review.yml` runs on every `pull_request` (opened/synchronize/reopened) against
+this repo. It's self-contained rather than pointing at a hosted instance: the job builds this
+solution, starts the API on `localhost` inside the same runner, then calls it with the triggering
+PR's own URL and `postToGitHub: true`, using the workflow's own `secrets.GITHUB_TOKEN` — so this
+repo's own pull requests get reviewed by the tool itself, with no deployment step required. The
+workflow declares `permissions: pull-requests: write` for that token to be allowed to post.
+
+**Known limitation**: GitHub only grants a **read-only** `GITHUB_TOKEN` to workflows triggered by
+a pull request from a fork, regardless of the `permissions` block above — this is a GitHub
+security restriction on the token, not something this workflow can configure around. On a fork
+PR the review still runs and findings are still logged in the workflow output, but the "post to
+GitHub" call will fail with `403` (reported via `gitHubPublish.posted: false`, same as any other
+publish failure) rather than posting inline comments.
 
 ## Example Response
 
@@ -363,18 +432,44 @@ Logging__LogLevel__AI.CodeReview.Infrastructure.SemanticKernel.AiCallLoggingFilt
   request-path-scoped (`/api/*` only, so `/swagger` stays reachable) header check in `Program.cs`;
   this is deliberately a minimal `X-Api-Key` comparison, not a full auth scheme, since the goal is
   "stop an anonymous caller from burning the AI budget," not multi-user authorization.
+- **The GitHub write-back token is supplied per request, not configured server-side** —
+  `IGitHubReviewPublisher.PublishReviewAsync` takes the token as a parameter rather than reading
+  it from `AiOptions`-style config. A single server-side token would need write access to every
+  repository this API is ever asked to review, which is a much larger blast radius than a token
+  scoped to one call (e.g. a GitHub Actions workflow's own short-lived `GITHUB_TOKEN`, which only
+  has access to the repo the workflow is running in). This mirrors how `IGitDiffFetcher` already
+  works unauthenticated per-request for reads; writes just make the same choice explicit.
+- **Publish failures degrade gracefully; request-shape errors don't** — `PostToGitHub` without
+  `GitUrl` or without `GitHubToken` is rejected with `400` before any work happens, same as the
+  existing diff/gitUrl validation. But once the review has been computed, a failure to *publish*
+  it (bad token, PR not found, or `GitUrl` turning out to be a commit rather than a pull request —
+  `GitHubUrlParser.TryParsePullRequest` only matches PR URLs) is caught in `ReviewsController` and
+  reported via the response's `GitHubPublish.Posted: false` field instead of failing the request,
+  the same reasoning as `AiReviewException`: the findings already exist, so a downstream failure
+  to do something else with them shouldn't discard them.
+- **`GitHubUrlParser` grew a second parse method instead of a second parser** —
+  `TryParsePullRequest` returns owner/repo/number separately (`GitHubPullRequestRef`), unlike
+  `TryParse`'s single pre-built API path, because posting a review needs to build a *different*
+  API path (`pulls/{number}/reviews`) than fetching a diff does. Both methods share the same
+  host/scheme validation (`TryGetGitHubPath`) and the existing `PullPattern` regex, so the two
+  URL shapes GitHub recognizes are still defined in exactly one place.
+- **The GitHub Actions workflow is self-contained, not pointed at a hosted instance** —
+  `.github/workflows/review.yml` builds and runs this repo's own API inside the CI job and calls
+  `localhost`, rather than requiring this API to be deployed somewhere first. This trades "reviews
+  only run within this repo's own CI" for "works immediately, with zero hosting/deployment setup."
 
 ## Future Improvements
 
-- GitHub PR integration — *posting* findings back as inline PR review comments (the API can
-  already *read* a diff from a commit/PR URL; writing results back to GitHub is the remaining
-  half).
+- Async/event-driven review pipeline — `POST /api/reviews` currently blocks for the full
+  parse/analyze/AI-review round trip; queuing the work (even just an in-process background
+  worker) and returning a review id immediately would decouple request latency from AI latency,
+  and is a prerequisite for a webhook-triggered flow that doesn't rely on GitHub Actions running
+  the API itself.
 - Repository-aware RAG — index the surrounding codebase so the AI reviewer has more context than
   just the diff.
 - Configurable coding guidelines — let teams supply their own rules to fold into the prompt.
 - Full Azure OpenAI support (the provider switch exists in `AiOptions`/DI wiring but is untested
   against a real Azure OpenAI resource).
-- GitHub Actions workflow to run reviews automatically on pull requests.
 - Persisted review history instead of a stateless request/response API.
 - Additional Roslyn analyzers (e.g. `async void`, disposed-object misuse, LINQ-in-loop patterns).
 - Semantic-model-based analysis (compiling against real project references) instead of
