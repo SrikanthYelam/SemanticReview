@@ -7,7 +7,7 @@ using Microsoft.SemanticKernel.Connectors.OpenAI;
 namespace AI.CodeReview.Infrastructure.Plugins;
 
 /// <summary>
-/// Single-responsibility Semantic Kernel plugin: scans a C# diff fragment for security
+/// Single-responsibility Semantic Kernel plugin: scans a diff fragment for security
 /// vulnerabilities (secrets, injection, unsafe deserialization, weak crypto, etc.) using a
 /// narrower prompt than the general <see cref="CodeReviewPlugin"/>. Reuses the same structured
 /// output shape (<see cref="AiFindingsResponse"/>) as the general reviewer.
@@ -25,17 +25,18 @@ public sealed class SecurityScanPlugin
         var promptConfig = new PromptTemplateConfig(SecurityScanPrompt.Template)
         {
             Name = "ScanForSecurityIssues",
-            Description = "Scans C# code changes for security vulnerabilities.",
+            Description = "Scans code changes for security vulnerabilities.",
             AllowDangerouslySetContent = true
         };
         promptConfig.InputVariables.Add(new InputVariable { Name = "fileName", AllowDangerouslySetContent = true });
+        promptConfig.InputVariables.Add(new InputVariable { Name = "language", AllowDangerouslySetContent = true });
         promptConfig.InputVariables.Add(new InputVariable { Name = "diffContext", AllowDangerouslySetContent = true });
 
         _scanFunction = KernelFunctionFactory.CreateFromPrompt(promptConfig);
     }
 
     [KernelFunction("ScanForSecurityIssues")]
-    [Description("Scan C# code changes for security vulnerabilities such as hardcoded secrets, injection, and weak cryptography.")]
+    [Description("Scan code changes for security vulnerabilities such as hardcoded secrets, injection, and weak cryptography.")]
     public async Task<string> ScanAsync(
         string fileName,
         string diffContext,
@@ -50,6 +51,7 @@ public sealed class SecurityScanPlugin
         var arguments = new KernelArguments(executionSettings)
         {
             ["fileName"] = fileName,
+            ["language"] = ReviewLanguage.FromFileName(fileName),
             ["diffContext"] = diffContext
         };
 

@@ -7,7 +7,7 @@ using Microsoft.SemanticKernel.Connectors.OpenAI;
 namespace AI.CodeReview.Infrastructure.Plugins;
 
 /// <summary>
-/// Single-responsibility Semantic Kernel plugin: reviews a C# diff fragment and returns
+/// Single-responsibility Semantic Kernel plugin: reviews a diff fragment and returns
 /// structured JSON findings. Not used for agentic auto function-calling — the review pipeline
 /// invokes this function directly, one file at a time.
 /// </summary>
@@ -30,17 +30,18 @@ public sealed class CodeReviewPlugin
         var promptConfig = new PromptTemplateConfig(CodeReviewPrompt.Template)
         {
             Name = "AnalyzeCode",
-            Description = "Analyzes C# code changes for correctness, security, performance, and maintainability issues.",
+            Description = "Analyzes code changes for correctness, security, performance, and maintainability issues.",
             AllowDangerouslySetContent = true
         };
         promptConfig.InputVariables.Add(new InputVariable { Name = "fileName", AllowDangerouslySetContent = true });
+        promptConfig.InputVariables.Add(new InputVariable { Name = "language", AllowDangerouslySetContent = true });
         promptConfig.InputVariables.Add(new InputVariable { Name = "diffContext", AllowDangerouslySetContent = true });
 
         _reviewFunction = KernelFunctionFactory.CreateFromPrompt(promptConfig);
     }
 
     [KernelFunction("AnalyzeCode")]
-    [Description("Analyze C# code changes for correctness, security, performance, and maintainability issues.")]
+    [Description("Analyze code changes for correctness, security, performance, and maintainability issues.")]
     public async Task<string> AnalyzeCodeAsync(
         string fileName,
         string diffContext,
@@ -55,6 +56,7 @@ public sealed class CodeReviewPlugin
         var arguments = new KernelArguments(executionSettings)
         {
             ["fileName"] = fileName,
+            ["language"] = ReviewLanguage.FromFileName(fileName),
             ["diffContext"] = diffContext
         };
 
