@@ -3,7 +3,7 @@ namespace AI.CodeReview.Infrastructure.Prompts;
 internal static class CodeReviewPrompt
 {
     public const string Template = """
-        You are an expert senior C# code reviewer. Review ONLY the added lines shown below from
+        You are an expert senior {{$language}} code reviewer. Review ONLY the added lines shown below from
         the file "{{$fileName}}". These lines come from a git diff; each is prefixed with its
         line number in the new version of the file.
 

@@ -77,22 +77,27 @@ across the two — add new pipeline behavior to `ReviewDiffAsync` once.
 
 1. Validate diff is non-empty/whitespace (`ArgumentException` → controller returns `400`).
 2. `IDiffParser.Parse` → per-file lists of added lines with their **real** new-file line numbers.
-3. Filter to `.cs` files with at least one added line.
-4. Per file: reconstruct the added-line text, run `IStaticCodeAnalyzer.Analyze` (Roslyn — returns
-   findings with line numbers **local to the reconstructed fragment**, 1-based), then remap those
-   local line numbers back to real diff line numbers via `ParsedFileDiff.AddedLines[localLine-1]`.
-5. Per file: run `IAiCodeReviewer.ReviewAsync`, passing each added line prefixed with its real
-   line number so the model can report real line numbers directly (no remapping needed for AI
-   findings).
+3. Keep files with at least one added line, and split them in two: `.cs` files, and non-C# files
+   whose extension is in the `AiOnlyReviewExtensions` allowlist (TS/JS, Python, Java, Go, Ruby,
+   PHP, Razor, SQL, YAML, JSON, HTML, CSS/SCSS). It's an allowlist, not a denylist, so anything
+   else (binaries, lock files, generated output) is skipped entirely. Add a new extension there.
+4. Per `.cs` file: reconstruct the added-line text, run `IStaticCodeAnalyzer.Analyze` (Roslyn —
+   returns findings with line numbers **local to the reconstructed fragment**, 1-based), then remap
+   those local line numbers back to real diff line numbers via `ParsedFileDiff.AddedLines[localLine-1]`.
+   AI-only files skip this step: Roslyn is C#-specific.
+5. Per file (`.cs` and AI-only alike): run `IAiCodeReviewer.ReviewAsync`, passing each added line
+   prefixed with its real line number so the model can report real line numbers directly (no
+   remapping needed for AI findings). These calls run in parallel, bounded to
+   `MaxConcurrentAiReviews` (4) by a `SemaphoreSlim`, since AI is the slow network-bound step.
 6. Merge Roslyn + AI findings, dedupe by `(File, Line, Category)` keeping the first occurrence
    (Roslyn findings are added to the list before AI findings, so Roslyn wins a collision),
    sort by `Severity` (enum declaration order *is* the priority order: Critical→Info), then
    `File`, then `Line`.
 
 If `IAiCodeReviewer.ReviewAsync` throws `AiReviewException` for a file (step 5), the orchestrator
-catches it, logs a warning, and continues with that file's Roslyn findings only — the AI review
-is a best-effort enhancement, not a hard dependency of a successful response. See "Error
-handling" below.
+catches it, logs a warning, and continues with that file's Roslyn findings only (none at all, for
+an AI-only file) — the AI review is a best-effort enhancement, not a hard dependency of a
+successful response. See "Error handling" below.
 
 `CodeReviewResult.Findings` (in `CodeReviewOrchestrator`'s return value) is still one deduped,
 sorted list — every `ReviewFinding` carries a `Source` (`FindingSource.StaticAnalysis` or
@@ -155,6 +160,14 @@ is caught locally inside `ReviewAsync` and logged, independent of the general re
 try/catch, so it can't discard general findings already produced for that file — see "Error
 handling" below for how this differs from `GitDiffFetchException`'s propagate-everywhere behavior.
 
+Both prompts take a `{{$language}}` variable ("You are an expert senior {{$language}} code
+reviewer") so a YAML or Python file isn't reviewed by a "C# reviewer" — each plugin fills it from
+`ReviewLanguage.FromFileName(fileName)` (`Prompts/ReviewLanguage.cs`, extension → display name,
+falling back to `"software"`). It mirrors the orchestrator's `AiOnlyReviewExtensions`, so when you
+add an extension there, add its language name to `ReviewLanguage` too. The model still only sees
+the *added lines*, not the surrounding file, so it can miss context (e.g. that a shell `&` inside
+a workflow `run: |` block is deliberate).
+
 `SemanticKernelCodeReviewer` then validates each plugin's response via a shared private
 `InvokeAndParseAsync` helper: `Severity`/`Category` strings are parsed against the Domain enums
 with `Enum.TryParse(ignoreCase: true)`; entries that don't parse are dropped and logged rather
@@ -167,7 +180,7 @@ hallucinate about "incorrectly encoded" operators instead of erroring — so thi
 just by reading responses that come back `200`. `CodeReviewPlugin`'s constructor disables it via
 `PromptTemplateConfig.AllowDangerouslySetContent = true`, but that alone is **not** sufficient:
 `PromptTemplateConfig.InputVariables` isn't auto-populated from the template text, so the
-per-variable flag has to be set explicitly for each variable (`fileName`, `diffContext`) via
+per-variable flag has to be set explicitly for each variable (`fileName`, `language`, `diffContext`) via
 `promptConfig.InputVariables.Add(new InputVariable { Name = ..., AllowDangerouslySetContent = true })`.
 If you add a new prompt variable, remember to add it here too.
 
