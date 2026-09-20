@@ -53,12 +53,13 @@ Clean architecture, dependency direction is strictly inward:
 ```
 Domain          → no dependencies on anything else in the solution
 Application     → depends only on Domain; defines IDiffParser, IStaticCodeAnalyzer,
-                   IAiCodeReviewer as abstractions; CodeReviewOrchestrator implements
-                   ICodeReviewService and is the only place that composes them
+                   IAiCodeReviewer, IGitDiffFetcher, IGitHubReviewPublisher as abstractions;
+                   CodeReviewOrchestrator implements ICodeReviewService and is the only place
+                   that composes the review pipeline
 Infrastructure  → implements the Application abstractions: UnifiedDiffParser (Diffing/),
                    RoslynStaticAnalyzer (Roslyn/), SemanticKernelCodeReviewer + CodeReviewPlugin +
                    SecurityScanPlugin + prompt templates (SemanticKernel/, Plugins/, Prompts/),
-                   GitHubDiffFetcher + GitHubUrlParser (Git/) implementing IGitDiffFetcher
+                   GitHubDiffFetcher + GitHubReviewPublisher + GitHubUrlParser (Git/)
 Api             → thin ReviewsController (POST /api/reviews) + Program.cs DI wiring
 ```
 
@@ -119,6 +120,25 @@ surface as GitHub's `404`, mapped to `GitDiffFetchException`; GitHub's unauthent
 (60 requests/hour/IP) surfaces as `403`, also mapped. `GitHubDiffFetcherTests` covers all of this
 via a hand-written `FakeHttpMessageHandler` (same "no mocking library" convention as the rest of
 the test suite) rather than a real network call.
+
+### Posting findings back to a GitHub PR (Infrastructure/Git, Api)
+
+Opt-in write-back: a request with `gitUrl` (a **pull request** URL) plus `postToGitHub: true` and
+`gitHubToken` has its findings posted as one GitHub review. This lives in the controller, not the
+orchestrator — `ReviewsController` runs the review, then calls `IGitHubReviewPublisher.PublishReviewAsync`
+(Application interface, `GitHubReviewPublisher` in Infrastructure) with the full merged
+`review.Findings`. The publisher `POST`s `repos/{owner}/{repo}/pulls/{number}/reviews` with
+`event: COMMENT`: findings with a `Line` become inline comments, findings without one are listed in
+the review's summary body rather than dropped. `GitHubUrlParser.TryParsePullRequest` (returns
+owner/repo/number as `GitHubPullRequestRef`) is the second parse method alongside `TryParse`,
+sharing its host/scheme validation and PR regex; it only matches PR URLs, so a commit URL is
+rejected. Registered separately from the fetcher via `AddGitHubReviewPublishing` (same
+`api.github.com` base address and required `User-Agent`).
+
+The token is supplied **per request**, never read from server config — a server-side token would
+need write access to every repo this API might review, whereas a workflow's own `GITHUB_TOKEN` is
+scoped to one repo. `GitHubReviewPublisherTests` covers this with the same hand-written
+`FakeHttpMessageHandler` as the fetcher tests.
 
 ### Structured AI output (Infrastructure/SemanticKernel, Infrastructure/Plugins)
 
@@ -183,6 +203,14 @@ existing `ArgumentException` handler). This is deliberately unlike the AI-failur
 an AI failure still leaves Roslyn findings to return, but a failed diff fetch means there's no
 diff at all, so there's nothing to degrade to — it has to fail the whole request.
 
+`GitHubPublishException` (Application-level, `Application/Git/`) goes the other way, back to the
+AI-failure pattern: by the time publishing runs the findings already exist, so `ReviewsController`
+catches it and reports `gitHubPublish: { posted: false, error }` in the `200` response instead of
+failing the request. The publisher maps GitHub `401`/`403`/`404`/`422` and network failures to
+readable messages; a `403` is also what a fork PR's read-only `GITHUB_TOKEN` produces. Request-shape
+errors are different — `postToGitHub` without `gitUrl`, or without `gitHubToken`, is a `400` up front
+before any work happens.
+
 ### Configuration
 
 Everything AI-related is bound once from the `"AI"` config section into `AiOptions`
@@ -198,6 +226,43 @@ exercised/tested, the AzureOpenAI branch exists to show the swap point.
 in `AddSemanticKernelServices`. This is why `AiOptions`'s properties are `{ get; set; }` rather
 than `{ get; init; }` — `PostConfigure` mutates an already-constructed instance, which an
 init-only property can't allow.
+
+**API key auth** is a separate, opt-in concern from the AI config above: `ApiAuthOptions`
+(`Api/Options/`, bound from the `"Api"` section, so `Api:ApiKey` / `Api__ApiKey`) is registered in
+`Program.cs`. If `ApiKey` is empty or unset (the default) the API is open, as in local dev. If
+it's set at startup, a small inline middleware requires a matching `X-Api-Key` header on every
+request whose path starts with `/api` and returns `401` `ProblemDetails` otherwise; `/swagger` is
+deliberately outside that prefix and stays reachable. It's a single shared-key comparison, not a
+real auth scheme — the goal is to stop an anonymous caller from burning the AI provider budget, not
+multi-user authorization. The check is decided once at startup, so changing the key needs a restart.
+Note it is unrelated to `AI:ApiKey`/`OPENAI_API_KEY`, which is the outbound OpenAI credential.
+
+### CI workflow (`.github/workflows/review.yml`)
+
+Triggers on `pull_request` (opened/synchronize/reopened) and reviews this repo's own PRs with this
+repo's own API. It's **self-contained, not pointed at a hosted instance**: one `ubuntu-latest` job
+builds the solution, starts the API in the background on `ASPNETCORE_URLS=http://localhost:5099`,
+polls it until it responds, then `curl`s it with the PR's `html_url`, `postToGitHub: true`, and the
+job's own `secrets.GITHUB_TOKEN` (the write-back token is per-request, see above). Steps share one
+runner, so the backgrounded process survives across steps; the runner and API are destroyed when
+the job ends. Other things to know when editing it:
+
+- `permissions: pull-requests: write` is what lets `GITHUB_TOKEN` post; `concurrency` cancels an
+  in-progress review when the same PR gets a new push.
+- The AI key comes from the `OPENAI_API_KEY` repo secret (which wins over `AI:ApiKey`, see
+  Configuration). If it's missing, the job still succeeds with Roslyn-only findings.
+- A failed post to GitHub doesn't fail the job: the last step only emits a `::warning::` when
+  `gitHubPublish.posted` isn't `true`. Fork PRs always hit this (GitHub gives forks a read-only
+  `GITHUB_TOKEN`, so the post is a `403`), but findings are still printed in the job log.
+- `dotnet run` applies `launchSettings.json`'s `applicationUrl` over `ASPNETCORE_URLS` unless
+  `--no-launch-profile` is passed, so the "start the API" step passes it — without it the API binds
+  to the launch profile's port instead of `5099` and the readiness loop times out. Keep the flag.
+- The diff fetch is unauthenticated (60 requests/hour/IP) while the publish uses `GITHUB_TOKEN`
+  (1,000/hour/repo), so the fetch is the tighter limit; the publish is one call regardless of
+  finding count.
+- To review a *different* repo, this workflow can't be reused as-is (it only sees this repo's PRs);
+  the README's "Using this to review a different repository" covers the two options (hosted
+  instance vs. cross-repo checkout).
 
 ### Testing
 
@@ -222,6 +287,7 @@ matches the line-number semantics you want to test.
   project's own namespace) before `using`-alias directives, so no alias can work around it. This
   is the one thing most likely to surprise you if you go looking for a `CodeReview` type/file —
   it's `Domain/CodeReviewResult.cs`.
-- **Scope stops after Phase 6** (tests/samples/README) of the original phased build plan. GitHub
-  PR integration (the spec's Phase 7) was deliberately not implemented — it's listed in the
-  README's Future Improvements only.
+- **GitHub PR integration (the spec's Phase 7) is implemented** — diff fetching from a commit/PR
+  URL, opt-in write-back of findings as a PR review, and `.github/workflows/review.yml`. It goes
+  beyond the original Phase 6 scope; the README's Future Improvements only lists what's still
+  unbuilt (e.g. an async/webhook-driven pipeline).
