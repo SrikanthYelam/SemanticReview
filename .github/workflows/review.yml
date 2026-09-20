@@ -36,7 +36,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ASPNETCORE_URLS: http://localhost:5099
         run: |
-          dotnet run --no-build --configuration Release --project src/AI.CodeReview.Api &
+          dotnet run --no-build --no-launch-profile --configuration Release --project src/AI.CodeReview.Api &
 
           for i in $(seq 1 30); do
             if curl -s -o /dev/null http://localhost:5099/api/reviews -X POST -H "Content-Type: application/json" -d '{}'; then
