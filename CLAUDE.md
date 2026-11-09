@@ -37,8 +37,7 @@ dotnet test --filter "FullyQualifiedName~Analyze_ResultUsage"         # run one 
 dotnet run --project src/AI.CodeReview.Api     # run the API (Swagger UI at /swagger in Development)
 ```
 
-Target framework is `net8.0` (the spec called for .NET 10, but only .NET 6/8 SDKs are installed
-on the dev machine — see "Notable deviations from the spec" below).
+Target framework is `net10.0`, as the spec called for.
 
 Configure `AI:ApiKey` to get AI findings in addition to Roslyn's:
 `dotnet user-secrets set "AI:ApiKey" "sk-..."` from `src/AI.CodeReview.Api`, or set `AI__ApiKey`.
@@ -227,8 +226,6 @@ matches the line-number semantics you want to test.
 
 ## Notable deviations from the original spec
 
-- **`.NET 8`, not `.NET 10`** — .NET 10 SDK wasn't installed on the dev machine; nothing in the
-  app depends on .NET 10-only features.
 - **Domain type is `CodeReviewResult`, not `CodeReview`** — a type literally named `CodeReview`
   is unreachable by its simple name from anywhere under the `AI.CodeReview.*` namespace tree: C#
   resolves enclosing-namespace members (the implicit `AI.CodeReview` namespace, formed by every
