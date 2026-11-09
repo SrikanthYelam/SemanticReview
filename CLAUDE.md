@@ -78,16 +78,23 @@ across the two — add new pipeline behavior to `ReviewDiffAsync` once.
 2. `IDiffParser.Parse` → per-file lists of added lines with their **real** new-file line numbers.
 3. Keep files with at least one added line, and split them in two: `.cs` files, and non-C# files
    whose extension is in the `AiOnlyReviewExtensions` allowlist (TS/JS, Python, Java, Go, Ruby,
-   PHP, Razor, SQL, YAML, JSON, HTML, CSS/SCSS). It's an allowlist, not a denylist, so anything
-   else (binaries, lock files, generated output) is skipped entirely. Add a new extension there.
+   PHP, Razor, SQL, HTML, CSS/SCSS). It's an allowlist, not a denylist, so anything else (binaries,
+   lock files, generated output) is skipped entirely. Add a new extension there. `.yml`/`.yaml`/
+   `.json` are deliberately **not** in this allowlist (nor in `ReviewLanguage`'s matching map,
+   below) — a CI workflow's `${{ secrets.X }}` reads as a hardcoded secret to a reviewer with no
+   way to tell a secret-store reference from a literal value, and the per-request `guidelines`
+   mechanism (see "Custom review guidelines" below) is the targeted fix for callers who still want
+   those files reviewed under their own repo's rules.
 4. Per `.cs` file: reconstruct the added-line text, run `IStaticCodeAnalyzer.Analyze` (Roslyn —
    returns findings with line numbers **local to the reconstructed fragment**, 1-based), then remap
    those local line numbers back to real diff line numbers via `ParsedFileDiff.AddedLines[localLine-1]`.
    AI-only files skip this step: Roslyn is C#-specific.
 5. Per file (`.cs` and AI-only alike): run `IAiCodeReviewer.ReviewAsync`, passing each added line
    prefixed with its real line number so the model can report real line numbers directly (no
-   remapping needed for AI findings). These calls run in parallel, bounded to
-   `MaxConcurrentAiReviews` (4) by a `SemaphoreSlim`, since AI is the slow network-bound step.
+   remapping needed for AI findings), plus the optional `guidelines` string threaded all the way
+   down from the request (see "Custom review guidelines" below) — same value, unchanged, for every
+   file in the request. These calls run in parallel, bounded to `MaxConcurrentAiReviews` (4) by a
+   `SemaphoreSlim`, since AI is the slow network-bound step.
 6. Merge Roslyn + AI findings, dedupe by `(File, Line, Category)` keeping the first occurrence
    (Roslyn findings are added to the list before AI findings, so Roslyn wins a collision),
    sort by `Severity` (enum declaration order *is* the priority order: Critical→Info), then
@@ -179,9 +186,25 @@ hallucinate about "incorrectly encoded" operators instead of erroring — so thi
 just by reading responses that come back `200`. `CodeReviewPlugin`'s constructor disables it via
 `PromptTemplateConfig.AllowDangerouslySetContent = true`, but that alone is **not** sufficient:
 `PromptTemplateConfig.InputVariables` isn't auto-populated from the template text, so the
-per-variable flag has to be set explicitly for each variable (`fileName`, `language`, `diffContext`) via
+per-variable flag has to be set explicitly for each variable (`fileName`, `language`,
+`diffContext`, `customGuidelines`) via
 `promptConfig.InputVariables.Add(new InputVariable { Name = ..., AllowDangerouslySetContent = true })`.
 If you add a new prompt variable, remember to add it here too.
+
+**Custom review guidelines**: both prompts also take a `{{$customGuidelines}}` variable, rendered
+on its own line right before "Code changes:". Unlike `{{$language}}`, this isn't filled from the
+file being reviewed — it comes from `ReviewRequest.Guidelines` (optional, per-request, `null` by
+default), threaded unchanged through `CodeReviewOrchestrator` → `SemanticKernelCodeReviewer` →
+both plugins' `AnalyzeCodeAsync`/`ScanAsync`. `Prompts/CustomGuidelines.BuildSection(guidelines)`
+renders either an empty string or a labeled "Additional project-specific guidelines" block — this
+pre-formatting happens in C#, not the prompt template, because the template engine here only
+supports `{{$var}}` substitution with no conditional blocks, and reaching for a different engine
+(e.g. Handlebars) just to make one section optional wasn't worth it. The design intent is that a
+caller's own repo maintains a markdown file of its own conventions (this repo's own
+`.github/review-guidelines.md`, read and sent by `.github/workflows/review.yml` on every
+self-review) and sends its contents as `guidelines` — never configured server-side, for the same
+reason the GitHub write-back token is per-request (see "Posting findings back to a GitHub PR"
+above): this API has no inherent knowledge of which repo it's reviewing.
 
 **Observing the actual request/response**: `AiCallLoggingFilter` (`IPromptRenderFilter` +
 `IFunctionInvocationFilter`, registered on the `Kernel` in
@@ -282,6 +305,10 @@ Tests use hand-written fakes (`tests/AI.CodeReview.Tests/TestDoubles/`) instead 
 library — the Application interfaces are small enough that this is simpler than adding Moq.
 `FakeStaticCodeAnalyzer`/`FakeAiCodeReviewer` also record which file names they were called with,
 so tests can assert filtering behavior (e.g. non-`.cs` files never reach either analyzer).
+`FakeAiCodeReviewer.ReceivedGuidelines` likewise records the `guidelines` value passed on each
+call (same order as `ReviewedFileNames`), so tests can assert it flows through unchanged from
+`ReviewAsync`/`ReviewFromUrlAsync` down to the AI reviewer, and that `null` (no guidelines
+supplied) flows through just as faithfully as a real string.
 
 When writing orchestrator tests, remember: findings from `FakeStaticCodeAnalyzer` go through the
 real local→real line-number remapping in the orchestrator, so a canned `Line` value on a "Roslyn"

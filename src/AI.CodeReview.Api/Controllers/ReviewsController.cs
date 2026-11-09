@@ -78,8 +78,8 @@ public sealed class ReviewsController : ControllerBase
         try
         {
             var review = hasGitUrl
-                ? await _codeReviewService.ReviewFromUrlAsync(request.GitUrl!, cancellationToken)
-                : await _codeReviewService.ReviewAsync(request.Diff!, cancellationToken);
+                ? await _codeReviewService.ReviewFromUrlAsync(request.GitUrl!, request.Guidelines, cancellationToken)
+                : await _codeReviewService.ReviewAsync(request.Diff!, request.Guidelines, cancellationToken);
 
             var findingsBySource = review.Findings.ToLookup(f => f.Source);
 

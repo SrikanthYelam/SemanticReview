@@ -36,6 +36,7 @@ public sealed class CodeReviewPlugin
         promptConfig.InputVariables.Add(new InputVariable { Name = "fileName", AllowDangerouslySetContent = true });
         promptConfig.InputVariables.Add(new InputVariable { Name = "language", AllowDangerouslySetContent = true });
         promptConfig.InputVariables.Add(new InputVariable { Name = "diffContext", AllowDangerouslySetContent = true });
+        promptConfig.InputVariables.Add(new InputVariable { Name = "customGuidelines", AllowDangerouslySetContent = true });
 
         _reviewFunction = KernelFunctionFactory.CreateFromPrompt(promptConfig);
     }
@@ -45,6 +46,7 @@ public sealed class CodeReviewPlugin
     public async Task<string> AnalyzeCodeAsync(
         string fileName,
         string diffContext,
+        string? guidelines = null,
         CancellationToken cancellationToken = default)
     {
         var executionSettings = new OpenAIPromptExecutionSettings
@@ -57,7 +59,8 @@ public sealed class CodeReviewPlugin
         {
             ["fileName"] = fileName,
             ["language"] = ReviewLanguage.FromFileName(fileName),
-            ["diffContext"] = diffContext
+            ["diffContext"] = diffContext,
+            ["customGuidelines"] = CustomGuidelines.BuildSection(guidelines)
         };
 
         var result = await _kernel.InvokeAsync(_reviewFunction, arguments, cancellationToken);

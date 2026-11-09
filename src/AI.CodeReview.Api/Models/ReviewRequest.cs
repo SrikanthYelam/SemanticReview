@@ -25,4 +25,13 @@ public sealed class ReviewRequest
     /// true; used only for that single publish call, never stored.
     /// </summary>
     public string? GitHubToken { get; init; }
+
+    /// <summary>
+    /// Optional project-specific review guidelines (free-form text — typically the contents of a
+    /// markdown file the caller's own repo maintains) folded into the AI prompts alongside the
+    /// built-in rules. Supplied per request rather than configured server-side, so different
+    /// callers/repos can each send their own without this API knowing anything about any specific
+    /// repo in advance.
+    /// </summary>
+    public string? Guidelines { get; init; }
 }

@@ -1,9 +1,10 @@
 namespace AI.CodeReview.Infrastructure.Prompts;
 
 /// <summary>
-/// Maps a file name to the language name injected into the review prompts, so a YAML or Python
-/// file isn't reviewed by a "C# code reviewer". Covers the same extensions the orchestrator routes
-/// to the AI reviewer.
+/// Maps a file name to the language name injected into the review prompts, so a TypeScript or
+/// Python file isn't reviewed by a "C# code reviewer". Covers the same extensions the orchestrator
+/// routes to the AI reviewer (deliberately not YAML/JSON — see
+/// <c>CodeReviewOrchestrator.AiOnlyReviewExtensions</c> for why).
 /// </summary>
 public static class ReviewLanguage
 {
@@ -19,8 +20,6 @@ public static class ReviewLanguage
         [".php"] = "PHP",
         [".razor"] = "Razor", [".cshtml"] = "Razor",
         [".sql"] = "SQL",
-        [".yml"] = "YAML", [".yaml"] = "YAML",
-        [".json"] = "JSON",
         [".html"] = "HTML",
         [".css"] = "CSS",
         [".scss"] = "SCSS"

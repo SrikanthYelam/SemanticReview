@@ -11,10 +11,13 @@ public sealed class CodeReviewOrchestrator : ICodeReviewService
 {
     // AI-only review (no Roslyn) for common non-C# text/code file types. Extensions not listed
     // here (binaries, lock files, generated output, etc.) are skipped entirely, same as before.
+    // Deliberately excludes .yml/.yaml/.json: those are config/metadata, not application code, and
+    // the security-scan prompt's "hardcoded secret" check produced false positives on CI workflow
+    // files referencing secrets correctly (e.g. GitHub Actions' own `${{ secrets.X }}` syntax).
     private static readonly HashSet<string> AiOnlyReviewExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".ts", ".tsx", ".js", ".jsx", ".py", ".java", ".go", ".rb", ".php",
-        ".razor", ".cshtml", ".sql", ".yml", ".yaml", ".json", ".html", ".css", ".scss"
+        ".razor", ".cshtml", ".sql", ".html", ".css", ".scss"
     };
 
     // Bounds how many files' AI review calls run concurrently, so a large diff doesn't fan out
@@ -41,17 +44,17 @@ public sealed class CodeReviewOrchestrator : ICodeReviewService
         _logger = logger;
     }
 
-    public Task<CodeReviewResult> ReviewAsync(string diff, CancellationToken cancellationToken = default)
+    public Task<CodeReviewResult> ReviewAsync(string diff, string? guidelines = null, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(diff))
         {
             throw new ArgumentException("The diff must not be empty.", nameof(diff));
         }
 
-        return ReviewDiffAsync(diff, cancellationToken);
+        return ReviewDiffAsync(diff, guidelines, cancellationToken);
     }
 
-    public async Task<CodeReviewResult> ReviewFromUrlAsync(string gitUrl, CancellationToken cancellationToken = default)
+    public async Task<CodeReviewResult> ReviewFromUrlAsync(string gitUrl, string? guidelines = null, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(gitUrl))
         {
@@ -61,10 +64,10 @@ public sealed class CodeReviewOrchestrator : ICodeReviewService
         _logger.LogInformation("Fetching diff from git URL");
         var diff = await _gitDiffFetcher.FetchDiffAsync(gitUrl, cancellationToken);
 
-        return await ReviewDiffAsync(diff, cancellationToken);
+        return await ReviewDiffAsync(diff, guidelines, cancellationToken);
     }
 
-    private async Task<CodeReviewResult> ReviewDiffAsync(string diff, CancellationToken cancellationToken)
+    private async Task<CodeReviewResult> ReviewDiffAsync(string diff, string? guidelines, CancellationToken cancellationToken)
     {
         _logger.LogInformation("Review started");
 
@@ -95,7 +98,7 @@ public sealed class CodeReviewOrchestrator : ICodeReviewService
         // rather than one file at a time, since it's the slow, network-bound step of the pipeline.
         using var aiConcurrencyLimiter = new SemaphoreSlim(MaxConcurrentAiReviews);
         var aiResults = await Task.WhenAll(csharpFiles.Concat(aiOnlyFiles)
-            .Select(file => ReviewFileWithAiAsync(file, aiConcurrencyLimiter, cancellationToken)));
+            .Select(file => ReviewFileWithAiAsync(file, guidelines, aiConcurrencyLimiter, cancellationToken)));
         foreach (var result in aiResults)
         {
             allFindings.AddRange(result);
@@ -115,14 +118,14 @@ public sealed class CodeReviewOrchestrator : ICodeReviewService
     }
 
     private async Task<IReadOnlyList<ReviewFinding>> ReviewFileWithAiAsync(
-        ParsedFileDiff file, SemaphoreSlim concurrencyLimiter, CancellationToken cancellationToken)
+        ParsedFileDiff file, string? guidelines, SemaphoreSlim concurrencyLimiter, CancellationToken cancellationToken)
     {
         await concurrencyLimiter.WaitAsync(cancellationToken);
         try
         {
             var diffContext = BuildDiffContext(file.AddedLines);
             _logger.LogInformation("AI review started for {FileName}", file.FileName);
-            var aiFindings = await _aiCodeReviewer.ReviewAsync(file.FileName, diffContext, cancellationToken);
+            var aiFindings = await _aiCodeReviewer.ReviewAsync(file.FileName, diffContext, guidelines, cancellationToken);
             _logger.LogInformation("AI review completed for {FileName}: {FindingCount} finding(s)", file.FileName, aiFindings.Count);
             return aiFindings;
         }
