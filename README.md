@@ -164,7 +164,7 @@ Future Improvements.
 
 ## Setup
 
-**Prerequisites:** [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0), an OpenAI API
+**Prerequisites:** [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0), an OpenAI API
 key.
 
 1. **Clone the repository**
