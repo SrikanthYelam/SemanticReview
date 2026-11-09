@@ -1,10 +1,18 @@
 # AI Code Review Assistant
 
+[![CI](https://github.com/SrikanthYelam/SemanticReview/actions/workflows/ci.yml/badge.svg)](https://github.com/SrikanthYelam/SemanticReview/actions/workflows/ci.yml)
+
 An AI-powered code review API for C# that combines a Large Language Model (via Microsoft
 Semantic Kernel) with deterministic static analysis (via Roslyn) to review git diffs and return
 structured, actionable findings — with an opt-in path to post those findings straight back to a
 GitHub pull request as a review, either on demand or automatically via the included GitHub
 Actions workflow.
+
+![The bot's review on a real pull request: a summary comment plus inline findings on the exact lines](docs/images/pr-review.png)
+
+*A real review posted by this tool on
+[pull request #1](https://github.com/SrikanthYelam/SemanticReview/pull/1) (first 2 of its 5
+findings shown).*
 
 ## Overview
 
