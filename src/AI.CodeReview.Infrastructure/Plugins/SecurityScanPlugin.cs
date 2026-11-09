@@ -30,6 +30,7 @@ public sealed class SecurityScanPlugin
         };
         promptConfig.InputVariables.Add(new InputVariable { Name = "fileName", AllowDangerouslySetContent = true });
         promptConfig.InputVariables.Add(new InputVariable { Name = "diffContext", AllowDangerouslySetContent = true });
+        promptConfig.InputVariables.Add(new InputVariable { Name = "customGuidelines", AllowDangerouslySetContent = true });
 
         _scanFunction = KernelFunctionFactory.CreateFromPrompt(promptConfig);
     }
@@ -39,6 +40,7 @@ public sealed class SecurityScanPlugin
     public async Task<string> ScanAsync(
         string fileName,
         string diffContext,
+        string? guidelines = null,
         CancellationToken cancellationToken = default)
     {
         var executionSettings = new OpenAIPromptExecutionSettings
@@ -50,7 +52,8 @@ public sealed class SecurityScanPlugin
         var arguments = new KernelArguments(executionSettings)
         {
             ["fileName"] = fileName,
-            ["diffContext"] = diffContext
+            ["diffContext"] = diffContext,
+            ["customGuidelines"] = CustomGuidelines.BuildSection(guidelines)
         };
 
         var result = await _kernel.InvokeAsync(_scanFunction, arguments, cancellationToken);

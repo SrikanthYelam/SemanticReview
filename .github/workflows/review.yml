@@ -54,8 +54,9 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_REVIEW_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          payload=$(jq -n --arg url "$PR_URL" --arg token "$GH_REVIEW_TOKEN" \
-            '{gitUrl: $url, postToGitHub: true, gitHubToken: $token}')
+          # --rawfile reads the guidelines file as a single JSON-safe string, no manual escaping.
+          payload=$(jq -n --arg url "$PR_URL" --arg token "$GH_REVIEW_TOKEN" --rawfile guidelines .github/review-guidelines.md \
+            '{gitUrl: $url, postToGitHub: true, gitHubToken: $token, guidelines: $guidelines}')
 
           response=$(curl -sf http://localhost:5099/api/reviews \
             -X POST -H "Content-Type: application/json" -d "$payload")

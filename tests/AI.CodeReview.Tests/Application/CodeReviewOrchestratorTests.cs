@@ -64,6 +64,64 @@ public class CodeReviewOrchestratorTests
         Assert.Contains("src/app.ts", aiReviewer.ReviewedFileNames);
     }
 
+    [Theory]
+    [InlineData("config.yml")]
+    [InlineData(".github/workflows/review.yml")]
+    [InlineData("values.yaml")]
+    [InlineData("package.json")]
+    public async Task ReviewAsync_YamlOrJsonFile_IsSkippedEntirely(string fileName)
+    {
+        // Config/metadata files, not application code — excluded from the AI-only allowlist after
+        // the security-scan prompt produced false "hardcoded secret" positives on CI workflow
+        // files that reference secrets correctly (GitHub Actions' `${{ secrets.X }}` syntax).
+        var parsed = new List<ParsedFileDiff>
+        {
+            new(fileName, new[] { new DiffAddedLine(1, "key: value") })
+        };
+
+        var analyzer = new FakeStaticCodeAnalyzer();
+        var aiReviewer = new FakeAiCodeReviewer();
+
+        var orchestrator = CreateOrchestrator(new FakeDiffParser(parsed), analyzer, aiReviewer);
+
+        await orchestrator.ReviewAsync("some diff");
+
+        Assert.DoesNotContain(fileName, analyzer.AnalyzedFileNames);
+        Assert.DoesNotContain(fileName, aiReviewer.ReviewedFileNames);
+    }
+
+    [Fact]
+    public async Task ReviewAsync_GuidelinesProvided_FlowsThroughToAiReviewer()
+    {
+        var parsed = new List<ParsedFileDiff>
+        {
+            new("src/Foo.cs", new[] { new DiffAddedLine(1, "var x = 1;") })
+        };
+
+        var aiReviewer = new FakeAiCodeReviewer();
+        var orchestrator = CreateOrchestrator(new FakeDiffParser(parsed), aiReviewer: aiReviewer);
+
+        await orchestrator.ReviewAsync("some diff", guidelines: "Never flag ${{ secrets.X }} as hardcoded.");
+
+        Assert.Equal(["Never flag ${{ secrets.X }} as hardcoded."], aiReviewer.ReceivedGuidelines);
+    }
+
+    [Fact]
+    public async Task ReviewAsync_NoGuidelinesProvided_PassesNullThrough()
+    {
+        var parsed = new List<ParsedFileDiff>
+        {
+            new("src/Foo.cs", new[] { new DiffAddedLine(1, "var x = 1;") })
+        };
+
+        var aiReviewer = new FakeAiCodeReviewer();
+        var orchestrator = CreateOrchestrator(new FakeDiffParser(parsed), aiReviewer: aiReviewer);
+
+        await orchestrator.ReviewAsync("some diff");
+
+        Assert.Equal([null], aiReviewer.ReceivedGuidelines);
+    }
+
     [Fact]
     public async Task ReviewAsync_FileWithNoAddedLines_IsSkipped()
     {

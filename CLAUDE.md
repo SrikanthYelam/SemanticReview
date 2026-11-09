@@ -76,22 +76,30 @@ across the two — add new pipeline behavior to `ReviewDiffAsync` once.
 
 1. Validate diff is non-empty/whitespace (`ArgumentException` → controller returns `400`).
 2. `IDiffParser.Parse` → per-file lists of added lines with their **real** new-file line numbers.
-3. Filter to `.cs` files with at least one added line.
-4. Per file: reconstruct the added-line text, run `IStaticCodeAnalyzer.Analyze` (Roslyn — returns
-   findings with line numbers **local to the reconstructed fragment**, 1-based), then remap those
-   local line numbers back to real diff line numbers via `ParsedFileDiff.AddedLines[localLine-1]`.
-5. Per file: run `IAiCodeReviewer.ReviewAsync`, passing each added line prefixed with its real
-   line number so the model can report real line numbers directly (no remapping needed for AI
-   findings).
+3. Keep files with at least one added line, and split them in two: `.cs` files, and non-C# files
+   whose extension is in the `AiOnlyReviewExtensions` allowlist (TS/JS, Python, Java, Go, Ruby,
+   PHP, Razor, SQL, HTML, CSS/SCSS — **not** YAML/JSON, deliberately excluded; see the comment on
+   `AiOnlyReviewExtensions` for why). It's an allowlist, not a denylist, so anything else
+   (binaries, lock files, generated output) is skipped entirely. Add a new extension there.
+4. Per `.cs` file: reconstruct the added-line text, run `IStaticCodeAnalyzer.Analyze` (Roslyn —
+   returns findings with line numbers **local to the reconstructed fragment**, 1-based), then
+   remap those local line numbers back to real diff line numbers via
+   `ParsedFileDiff.AddedLines[localLine-1]`. AI-only files skip this step: Roslyn is C#-specific.
+5. Per file (`.cs` and AI-only alike): run `IAiCodeReviewer.ReviewAsync`, passing each added line
+   prefixed with its real line number (so the model can report real line numbers directly, no
+   remapping needed for AI findings) plus the caller-supplied `guidelines` (see "Custom review
+   guidelines" below), unchanged for every file in one request. These calls run in parallel,
+   bounded to `MaxConcurrentAiReviews` (4) by a `SemaphoreSlim`, since AI is the slow
+   network-bound step.
 6. Merge Roslyn + AI findings, dedupe by `(File, Line, Category)` keeping the first occurrence
    (Roslyn findings are added to the list before AI findings, so Roslyn wins a collision),
    sort by `Severity` (enum declaration order *is* the priority order: Critical→Info), then
    `File`, then `Line`.
 
 If `IAiCodeReviewer.ReviewAsync` throws `AiReviewException` for a file (step 5), the orchestrator
-catches it, logs a warning, and continues with that file's Roslyn findings only — the AI review
-is a best-effort enhancement, not a hard dependency of a successful response. See "Error
-handling" below.
+catches it, logs a warning, and continues with that file's Roslyn findings only (none at all, for
+an AI-only file) — the AI review is a best-effort enhancement, not a hard dependency of a
+successful response. See "Error handling" below.
 
 `CodeReviewResult.Findings` (in `CodeReviewOrchestrator`'s return value) is still one deduped,
 sorted list — every `ReviewFinding` carries a `Source` (`FindingSource.StaticAnalysis` or
@@ -140,6 +148,17 @@ handling" below for how this differs from `GitDiffFetchException`'s propagate-ev
 with `Enum.TryParse(ignoreCase: true)`; entries that don't parse are dropped and logged rather
 than failing the whole review.
 
+**Custom review guidelines**: both plugins take an optional `guidelines` parameter (threaded all
+the way from `ReviewRequest.Guidelines` through `ICodeReviewService`/`IAiCodeReviewer`) and fill a
+third prompt variable, `{{$customGuidelines}}`, via `Prompts/CustomGuidelines.BuildSection`. That
+helper — not the prompt template — decides what renders: an absent/blank `guidelines` value
+produces an empty string (so the prompt looks exactly as it did before this existed), a non-empty
+one produces a labeled "Additional project-specific guidelines" block. This lives in C# rather
+than the template because the basic SK prompt template engine both plugins use only supports
+`{{$var}}` substitution, not conditionals — reaching for Handlebars just for one optional section
+wasn't worth it. Supplied per request, not server-side config (see README's Architecture
+Decisions for why), so there's no single "this API's guidelines" — every caller sends its own.
+
 **Gotcha**: SK's default prompt template engine HTML-encodes injected `{{$var}}` content (`<` →
 `&lt;`, etc.) to guard against prompt-template injection. Left on, this silently corrupts real C#
 source (generics, comparisons, `=>`) before the model sees it, and the model will confidently
@@ -147,7 +166,8 @@ hallucinate about "incorrectly encoded" operators instead of erroring — so thi
 just by reading responses that come back `200`. `CodeReviewPlugin`'s constructor disables it via
 `PromptTemplateConfig.AllowDangerouslySetContent = true`, but that alone is **not** sufficient:
 `PromptTemplateConfig.InputVariables` isn't auto-populated from the template text, so the
-per-variable flag has to be set explicitly for each variable (`fileName`, `diffContext`) via
+per-variable flag has to be set explicitly for each variable (`fileName`, `diffContext`,
+`customGuidelines`) via
 `promptConfig.InputVariables.Add(new InputVariable { Name = ..., AllowDangerouslySetContent = true })`.
 If you add a new prompt variable, remember to add it here too.
 
@@ -205,6 +225,8 @@ Tests use hand-written fakes (`tests/AI.CodeReview.Tests/TestDoubles/`) instead 
 library — the Application interfaces are small enough that this is simpler than adding Moq.
 `FakeStaticCodeAnalyzer`/`FakeAiCodeReviewer` also record which file names they were called with,
 so tests can assert filtering behavior (e.g. non-`.cs` files never reach either analyzer).
+`FakeAiCodeReviewer.ReceivedGuidelines` additionally records the `guidelines` value from every
+call, in the same order as `ReviewedFileNames`, so tests can assert it flowed through unchanged.
 
 When writing orchestrator tests, remember: findings from `FakeStaticCodeAnalyzer` go through the
 real local→real line-number remapping in the orchestrator, so a canned `Line` value on a "Roslyn"

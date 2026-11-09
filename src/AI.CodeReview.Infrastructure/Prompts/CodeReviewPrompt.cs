@@ -21,6 +21,7 @@ internal static class CodeReviewPrompt
           ExceptionHandling, Async, Testing.
         - If the code is acceptable and you find no issues, return an empty findings list. Do not
           manufacture a finding just to have something to say.
+        {{$customGuidelines}}
 
         Code changes:
         {{$diffContext}}

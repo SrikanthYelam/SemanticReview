@@ -72,6 +72,8 @@ tests/
 samples/
   SampleDiffs/                   Three realistic sample diffs (buggy, performance, clean)
 .github/
+  review-guidelines.md           This repo's own project-specific review guidelines, sent as
+                                  `guidelines` on every request review.yml makes
   workflows/review.yml           Self-contained CI job: builds+runs the API, then has it review
                                   and post comments on the pull request that triggered the run
 ```
@@ -90,8 +92,12 @@ touching the orchestration logic.
   maps directly onto the `Severity`/`ReviewCategory` domain enums — a general review pass plus a
   dedicated security-scan pass (hardcoded secrets, SQL/command injection, weak crypto, etc.).
 - AI-only review (no Roslyn) for changed files outside C# — TypeScript/JavaScript, Python, Java,
-  Go, Ruby, PHP, Razor/`.cshtml`, SQL, YAML, JSON, HTML, and CSS — so a diff that only touches
-  those files still gets reviewed instead of being silently skipped.
+  Go, Ruby, PHP, Razor/`.cshtml`, SQL, HTML, and CSS — so a diff that only touches those files
+  still gets reviewed instead of being silently skipped. YAML/JSON are deliberately *not* in this
+  list — see "Supplying project-specific guidelines" below for why.
+- Optional per-request review guidelines (`guidelines` on the request body) — free-form text,
+  typically the contents of a caller's own markdown file, folded into both AI prompts alongside
+  the built-in rules. See "Supplying project-specific guidelines" below.
 - Per-file AI review calls run in parallel (bounded to 4 concurrent) instead of one file at a
   time, so multi-file diffs review noticeably faster.
 - Transient AI provider failures (timeouts, connection errors, `429`/`5xx`) are retried
@@ -291,6 +297,37 @@ review was already computed successfully, so it's still returned with `200`, alo
 }
 ```
 
+### Supplying project-specific guidelines
+
+Add `guidelines` (a plain string) to any request and its contents are folded into both AI prompts
+(the general review and the security scan) alongside the built-in rules — a way to tell the
+reviewer about conventions specific to the repo being reviewed, without this API knowing anything
+about that repo in advance:
+
+```bash
+curl -X POST https://localhost:7004/api/reviews \
+  -H "Content-Type: application/json" \
+  -d '{
+    "gitUrl": "https://github.com/{owner}/{repo}/pull/{number}",
+    "guidelines": "Do not flag CI/CD secret-reference syntax (e.g. GitHub Actions'"'"' ${{ secrets.X }}) as a hardcoded secret — it is a reference to the encrypted secret store, not a literal value."
+  }'
+```
+
+In practice, a caller maintains this as a markdown file in its own repo (its own equivalent of a
+`CLAUDE.md` or lint config — a natural fit, since it's "what this codebase cares about") and a CI
+workflow reads that file and includes its contents as `guidelines` on each request. This repo's
+own `.github/review-guidelines.md` and `.github/workflows/review.yml` do exactly that for this
+repo's own PRs — see them for a working example. Guidelines are supplied **per request**, not
+configured server-side here, so different callers/repos can each send their own; see Architecture
+Decisions for why.
+
+This was the fix for a real false positive: the security-scan prompt initially flagged
+`${{ secrets.OPENAI_API_KEY }}` in a GitHub Actions workflow as a "hardcoded secret" — it had no
+way to know that syntax means "pulled from the encrypted secret store at runtime," not a literal
+value. `guidelines` is the general-purpose fix; narrowing the AI-only extension allowlist to
+exclude YAML/JSON (config/metadata, not application code — see Features above) is the specific
+one for CI workflow files themselves.
+
 ### Authentication
 
 By default the API is open, same as before. To require an API key on every `/api/*` request, set
@@ -319,9 +356,11 @@ the API only exists for the lifetime of one CI job:
 3. A readiness loop polls that local endpoint until it responds. This works because a job's steps
    are separate shell invocations on the *same* runner, not separate machines — the backgrounded
    process from step 2 is still alive and reachable when later steps run.
-4. The final step calls that same `localhost` endpoint with the triggering PR's own URL,
-   `postToGitHub: true`, and the workflow's own `secrets.GITHUB_TOKEN` — so this repo's own pull
-   requests get reviewed by the tool itself, with no deployment step required.
+4. The final step reads this repo's own `.github/review-guidelines.md` into a JSON-safe string
+   (`jq -Rs .`) and calls that same `localhost` endpoint with the triggering PR's own URL,
+   `postToGitHub: true`, `guidelines` set to that file's contents, and the workflow's own
+   `secrets.GITHUB_TOKEN` — so this repo's own pull requests get reviewed by the tool itself,
+   using its own guidelines, with no deployment step required.
 5. The runner (and the API process with it) is destroyed when the job ends; nothing persists
    between runs — every PR event gets a completely fresh instance.
 
@@ -465,10 +504,15 @@ Logging__LogLevel__AI.CodeReview.Infrastructure.SemanticKernel.AiCallLoggingFilt
   `(File, Line, Category)` dedupe won't catch (an exact-line match still dedupes fine).
 - **Non-C# files get AI-only review, gated by an extension allowlist, not a denylist** — Roslyn
   is C#-specific, but the AI reviewer just needs diff text, so `CodeReviewOrchestrator` routes
-  changed files matching a small allowlist of common source/config extensions (TS/JS, Python,
-  Java, Go, Ruby, PHP, Razor, SQL, YAML, JSON, HTML, CSS) to the AI reviewer only. An allowlist
-  was chosen over "review anything non-C#" so binaries, lock files, and generated output stay
-  skipped, same as before.
+  changed files matching a small allowlist of common source extensions (TS/JS, Python, Java, Go,
+  Ruby, PHP, Razor, SQL, HTML, CSS) to the AI reviewer only. An allowlist was chosen over "review
+  anything non-C#" so binaries, lock files, and generated output stay skipped, same as before.
+  YAML/JSON were in this list originally but were removed — they're config/metadata rather than
+  application code, and the security-scan prompt's "hardcoded secret" check couldn't distinguish a
+  real hardcoded value from a correct secret-store reference (GitHub Actions' `${{ secrets.X }}`
+  syntax) in a workflow file, producing false positives. `guidelines` (see "Supplying
+  project-specific guidelines") is the general fix for prompt blind spots like this one; narrowing
+  the allowlist was the specific fix for this file type.
 - **AI review calls run in parallel, bounded by a `SemaphoreSlim`** — the per-file loop used to
   `await` each file's AI call in sequence, so review latency scaled linearly with file count.
   Roslyn analysis (CPU-only, fast) still runs sequentially per file; only the AI calls (the
@@ -512,6 +556,20 @@ Logging__LogLevel__AI.CodeReview.Infrastructure.SemanticKernel.AiCallLoggingFilt
   `.github/workflows/review.yml` builds and runs this repo's own API inside the CI job and calls
   `localhost`, rather than requiring this API to be deployed somewhere first. This trades "reviews
   only run within this repo's own CI" for "works immediately, with zero hosting/deployment setup."
+- **Custom guidelines are supplied per request, not configured server-side** — `ReviewRequest.Guidelines`
+  flows straight through `ICodeReviewService` → `IAiCodeReviewer` → both plugins' prompt variables;
+  there's no `AiOptions`-style "one guidelines text for every review this API ever runs" setting.
+  Same reasoning as the GitHub write-back token already being per-request: this API has no
+  knowledge of which repo it's reviewing until a request tells it, and different callers plausibly
+  want entirely different rules. The tradeoff is the caller is responsible for sourcing and sending
+  its own guidelines text (typically a markdown file in its own repo) on every request — this API
+  never reads a file from disk or persists anything between calls.
+- **`CustomGuidelines.BuildSection` renders the whole section in C#, not the prompt template** —
+  the basic Semantic Kernel prompt template engine both plugins use only supports `{{$var}}`
+  substitution, no conditionals, so an empty/absent `guidelines` value is handled by pre-building
+  an empty string (rather than, say, "Additional guidelines: (none)" showing up in every prompt)
+  instead of reaching for a different template engine (e.g. Handlebars) just for one optional
+  section.
 
 ## Future Improvements
 
@@ -522,7 +580,6 @@ Logging__LogLevel__AI.CodeReview.Infrastructure.SemanticKernel.AiCallLoggingFilt
   the API itself.
 - Repository-aware RAG — index the surrounding codebase so the AI reviewer has more context than
   just the diff.
-- Configurable coding guidelines — let teams supply their own rules to fold into the prompt.
 - Full Azure OpenAI support (the provider switch exists in `AiOptions`/DI wiring but is untested
   against a real Azure OpenAI resource).
 - Persisted review history instead of a stateless request/response API.

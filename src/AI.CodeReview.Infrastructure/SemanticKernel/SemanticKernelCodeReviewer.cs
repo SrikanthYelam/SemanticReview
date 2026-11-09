@@ -34,10 +34,11 @@ public sealed class SemanticKernelCodeReviewer : IAiCodeReviewer
     public async Task<IReadOnlyList<ReviewFinding>> ReviewAsync(
         string fileName,
         string diffContext,
+        string? guidelines = null,
         CancellationToken cancellationToken = default)
     {
         var findings = await InvokeAndParseAsync(
-            () => _plugin.AnalyzeCodeAsync(fileName, diffContext, cancellationToken),
+            () => _plugin.AnalyzeCodeAsync(fileName, diffContext, guidelines, cancellationToken),
             fileName,
             "AI code review",
             cancellationToken);
@@ -45,7 +46,7 @@ public sealed class SemanticKernelCodeReviewer : IAiCodeReviewer
         try
         {
             var securityFindings = await InvokeAndParseAsync(
-                () => _securityScanPlugin.ScanAsync(fileName, diffContext, cancellationToken),
+                () => _securityScanPlugin.ScanAsync(fileName, diffContext, guidelines, cancellationToken),
                 fileName,
                 "Security scan",
                 cancellationToken);
