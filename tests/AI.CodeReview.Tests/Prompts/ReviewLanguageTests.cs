@@ -7,9 +7,6 @@ public class ReviewLanguageTests
 {
     [Theory]
     [InlineData("src/Foo.cs", "C#")]
-    [InlineData(".github/workflows/review.yml", "YAML")]
-    [InlineData("config/app.yaml", "YAML")]
-    [InlineData("appsettings.json", "JSON")]
     [InlineData("web/app.tsx", "TypeScript")]
     [InlineData("web/app.jsx", "JavaScript")]
     [InlineData("tools/build.py", "Python")]
@@ -25,6 +22,11 @@ public class ReviewLanguageTests
     [Theory]
     [InlineData("Makefile")]
     [InlineData("archive.zip")]
+    // YAML/JSON were removed from the AI-only allowlist (see CodeReviewOrchestrator), so these
+    // never reach ReviewLanguage in practice — covered here anyway to document that
+    // FromFileName itself still falls back gracefully rather than erroring on them.
+    [InlineData(".github/workflows/review.yml")]
+    [InlineData("appsettings.json")]
     public void FromFileName_UnknownExtension_FallsBackToGenericName(string fileName)
         => Assert.Equal("software", ReviewLanguage.FromFileName(fileName));
 }

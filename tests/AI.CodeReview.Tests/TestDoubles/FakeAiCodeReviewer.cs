@@ -10,6 +10,9 @@ public sealed class FakeAiCodeReviewer : IAiCodeReviewer
 
     public List<string> ReviewedFileNames { get; } = [];
 
+    /// <summary>The `guidelines` value passed on each call, in the same order as ReviewedFileNames.</summary>
+    public List<string?> ReceivedGuidelines { get; } = [];
+
     public FakeAiCodeReviewer(
         IReadOnlyDictionary<string, IReadOnlyList<ReviewFinding>>? findingsByFile = null,
         Exception? exceptionToThrow = null)
@@ -21,9 +24,11 @@ public sealed class FakeAiCodeReviewer : IAiCodeReviewer
     public Task<IReadOnlyList<ReviewFinding>> ReviewAsync(
         string fileName,
         string diffContext,
+        string? guidelines = null,
         CancellationToken cancellationToken = default)
     {
         ReviewedFileNames.Add(fileName);
+        ReceivedGuidelines.Add(guidelines);
 
         if (_exceptionToThrow is not null)
         {

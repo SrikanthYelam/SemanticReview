@@ -28,6 +28,7 @@ internal static class SecurityScanPrompt
         - The category for every finding must always be exactly "Security".
         - If no vulnerabilities are present, return an empty findings list. Do not manufacture a
           finding just to have something to say.
+        {{$customGuidelines}}
 
         Code changes:
         {{$diffContext}}

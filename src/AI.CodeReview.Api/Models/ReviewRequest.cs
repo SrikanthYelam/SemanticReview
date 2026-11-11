@@ -1,3 +1,5 @@
+using AI.CodeReview.Domain;
+
 namespace AI.CodeReview.Api.Models;
 
 public sealed class ReviewRequest
@@ -25,4 +27,22 @@ public sealed class ReviewRequest
     /// true; used only for that single publish call, never stored.
     /// </summary>
     public string? GitHubToken { get; init; }
+
+    /// <summary>
+    /// Optional project-specific review guidelines (free-form text — typically the contents of a
+    /// markdown file the caller's own repo maintains) folded into the AI prompts alongside the
+    /// built-in rules. Supplied per request rather than configured server-side, so different
+    /// callers/repos can each send their own without this API knowing anything about any specific
+    /// repo in advance.
+    /// </summary>
+    public string? Guidelines { get; init; }
+
+    /// <summary>
+    /// Optional minimum severity to include in the results (inclusive) — findings less severe
+    /// than this are dropped before dedupe/sort and before posting to GitHub. Defaults to
+    /// <see cref="Severity.Low"/> (excludes only <see cref="Severity.Info"/>) when omitted.
+    /// Supplied per request rather than configured server-side, same reasoning as
+    /// <see cref="Guidelines"/> — different callers may want different thresholds.
+    /// </summary>
+    public Severity? MinimumSeverity { get; init; }
 }
