@@ -533,6 +533,14 @@ Logging__LogLevel__AI.CodeReview.Infrastructure.SemanticKernel.AiCallLoggingFilt
   the template would need a different Semantic Kernel template engine (e.g. Handlebars) just for
   one optional section. Pre-formatting the section (or an empty string) in C# and substituting it
   as a single `{{$customGuidelines}}` variable avoided that engine switch.
+- **`Info`-severity findings are dropped in code, not just asked for in `guidelines`** —
+  `CodeReviewOrchestrator` filters out any finding with `Severity.Info` before merge/dedupe. A
+  "don't report Info" line in `guidelines` only reduced how often the AI used that severity in
+  practice, it never reliably got it to zero — the base prompt template itself lists `Info` as a
+  valid severity, and free-text guidelines appended later in the same prompt don't consistently
+  override that. The code-level filter is a deterministic backstop for this one specific,
+  low-value case; `guidelines` remains the mechanism for everything else (it's advisory by
+  nature, same as every other instruction in the prompt).
 - **AI review calls run in parallel, bounded by a `SemaphoreSlim`** — the per-file loop used to
   `await` each file's AI call in sequence, so review latency scaled linearly with file count.
   Roslyn analysis (CPU-only, fast) still runs sequentially per file; only the AI calls (the

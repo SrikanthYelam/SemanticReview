@@ -105,6 +105,11 @@ public sealed class CodeReviewOrchestrator : ICodeReviewService
         }
 
         var findings = allFindings
+            // Info-severity findings are low-value noise (the AI reviewer tends to use it for
+            // "no action needed" affirmations despite prompt instructions not to) — drop them
+            // deterministically here rather than relying on the AI to comply with that
+            // instruction, since guidelines text alone doesn't reliably suppress it.
+            .Where(f => f.Severity != Severity.Info)
             .GroupBy(f => (f.File, f.Line, f.Category))
             .Select(g => g.First())
             .OrderBy(f => f.Severity)

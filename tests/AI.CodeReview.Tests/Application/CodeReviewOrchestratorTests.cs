@@ -174,6 +174,33 @@ public class CodeReviewOrchestratorTests
     }
 
     [Fact]
+    public async Task ReviewAsync_InfoSeverityFinding_IsFilteredOut()
+    {
+        const string file = "src/Foo.cs";
+        var parsed = new List<ParsedFileDiff>
+        {
+            new(file, new[] { new DiffAddedLine(1, "code") })
+        };
+
+        var infoFinding = new ReviewFinding(Severity.Info, ReviewCategory.CodeQuality, file, 1, "info", "s", FindingSource.Ai);
+        var lowFinding = new ReviewFinding(Severity.Low, ReviewCategory.Maintainability, file, 2, "low", "s", FindingSource.Ai);
+
+        var aiReviewer = new FakeAiCodeReviewer(new Dictionary<string, IReadOnlyList<ReviewFinding>>
+        {
+            [file] = [infoFinding, lowFinding]
+        });
+
+        var orchestrator = CreateOrchestrator(new FakeDiffParser(parsed), aiReviewer: aiReviewer);
+
+        var result = await orchestrator.ReviewAsync("some diff");
+
+        // Info findings are deterministically dropped rather than relying on the AI reviewer to
+        // comply with a "don't report Info" prompt instruction — see CodeReviewOrchestrator.
+        var finding = Assert.Single(result.Findings);
+        Assert.Equal(lowFinding, finding);
+    }
+
+    [Fact]
     public async Task ReviewAsync_MultipleFindings_AreSortedBySeverityThenFileThenLine()
     {
         const string fileA = "src/A.cs";

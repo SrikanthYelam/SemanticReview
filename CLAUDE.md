@@ -95,10 +95,14 @@ across the two — add new pipeline behavior to `ReviewDiffAsync` once.
    down from the request (see "Custom review guidelines" below) — same value, unchanged, for every
    file in the request. These calls run in parallel, bounded to `MaxConcurrentAiReviews` (4) by a
    `SemaphoreSlim`, since AI is the slow network-bound step.
-6. Merge Roslyn + AI findings, dedupe by `(File, Line, Category)` keeping the first occurrence
-   (Roslyn findings are added to the list before AI findings, so Roslyn wins a collision),
-   sort by `Severity` (enum declaration order *is* the priority order: Critical→Info), then
-   `File`, then `Line`.
+6. Drop any finding with `Severity.Info` before merging, then merge Roslyn + AI findings, dedupe
+   by `(File, Line, Category)` keeping the first occurrence (Roslyn findings are added to the list
+   before AI findings, so Roslyn wins a collision), sort by `Severity` (enum declaration order
+   *is* the priority order: Critical→Info), then `File`, then `Line`. The Info filter is a
+   deterministic backstop, not a prompt instruction: the `guidelines`-based "don't report Info"
+   rule (see "Custom review guidelines" below) only reduced how often the AI used that severity,
+   it never reliably eliminated it — free-text prompt instructions don't override the base
+   prompt's own "Info is a valid severity" rule consistently enough to rely on.
 
 If `IAiCodeReviewer.ReviewAsync` throws `AiReviewException` for a file (step 5), the orchestrator
 catches it, logs a warning, and continues with that file's Roslyn findings only (none at all, for
