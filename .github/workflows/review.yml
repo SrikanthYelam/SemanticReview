@@ -54,9 +54,14 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_REVIEW_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # minimumSeverity: Medium — guidelines text alone (the "Do not report these at all" list
+          # in review-guidelines.md) doesn't reliably suppress specific low-value findings any more
+          # than it reliably suppressed Info (see CodeReviewOrchestrator's code-level filter above);
+          # every finding this self-review has produced so far has been Low, so Medium is the
+          # deterministic backstop for this workflow's own noise floor.
           payload=$(jq -n --arg url "$PR_URL" --arg token "$GH_REVIEW_TOKEN" \
             --rawfile guidelines .github/review-guidelines.md \
-            '{gitUrl: $url, postToGitHub: true, gitHubToken: $token, guidelines: $guidelines}')
+            '{gitUrl: $url, postToGitHub: true, gitHubToken: $token, guidelines: $guidelines, minimumSeverity: "Medium"}')
 
           response=$(curl -sf http://localhost:5099/api/reviews \
             -X POST -H "Content-Type: application/json" -d "$payload")

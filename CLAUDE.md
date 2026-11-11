@@ -293,6 +293,10 @@ job's own `secrets.GITHUB_TOKEN` (the write-back token is per-request, see above
 runner, so the backgrounded process survives across steps; the runner and API are destroyed when
 the job ends. Other things to know when editing it:
 
+- The payload also sets `minimumSeverity: "Medium"`, stricter than the API's own `Low` default —
+  guidelines text alone couldn't reliably suppress the specific low-value findings this self-review
+  kept producing (every one of them, in practice, has come back `Low`), so this workflow raises its
+  own threshold rather than continuing to tune prompt wording for diminishing returns.
 - `permissions: pull-requests: write` is what lets `GITHUB_TOKEN` post; `concurrency` cancels an
   in-progress review when the same PR gets a new push.
 - The AI key comes from the `OPENAI_API_KEY` repo secret (which wins over `AI:ApiKey`, see
