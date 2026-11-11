@@ -44,17 +44,25 @@ public sealed class CodeReviewOrchestrator : ICodeReviewService
         _logger = logger;
     }
 
-    public Task<CodeReviewResult> ReviewAsync(string diff, string? guidelines = null, CancellationToken cancellationToken = default)
+    public Task<CodeReviewResult> ReviewAsync(
+        string diff,
+        string? guidelines = null,
+        Severity minimumSeverity = Severity.Low,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(diff))
         {
             throw new ArgumentException("The diff must not be empty.", nameof(diff));
         }
 
-        return ReviewDiffAsync(diff, guidelines, cancellationToken);
+        return ReviewDiffAsync(diff, guidelines, minimumSeverity, cancellationToken);
     }
 
-    public async Task<CodeReviewResult> ReviewFromUrlAsync(string gitUrl, string? guidelines = null, CancellationToken cancellationToken = default)
+    public async Task<CodeReviewResult> ReviewFromUrlAsync(
+        string gitUrl,
+        string? guidelines = null,
+        Severity minimumSeverity = Severity.Low,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(gitUrl))
         {
@@ -64,10 +72,10 @@ public sealed class CodeReviewOrchestrator : ICodeReviewService
         _logger.LogInformation("Fetching diff from git URL");
         var diff = await _gitDiffFetcher.FetchDiffAsync(gitUrl, cancellationToken);
 
-        return await ReviewDiffAsync(diff, guidelines, cancellationToken);
+        return await ReviewDiffAsync(diff, guidelines, minimumSeverity, cancellationToken);
     }
 
-    private async Task<CodeReviewResult> ReviewDiffAsync(string diff, string? guidelines, CancellationToken cancellationToken)
+    private async Task<CodeReviewResult> ReviewDiffAsync(string diff, string? guidelines, Severity minimumSeverity, CancellationToken cancellationToken)
     {
         _logger.LogInformation("Review started");
 
@@ -105,11 +113,12 @@ public sealed class CodeReviewOrchestrator : ICodeReviewService
         }
 
         var findings = allFindings
-            // Info-severity findings are low-value noise (the AI reviewer tends to use it for
-            // "no action needed" affirmations despite prompt instructions not to) — drop them
-            // deterministically here rather than relying on the AI to comply with that
-            // instruction, since guidelines text alone doesn't reliably suppress it.
-            .Where(f => f.Severity != Severity.Info)
+            // Severity is declared Critical..Info in that order, so a lower enum value is more
+            // severe; this keeps everything at least as severe as minimumSeverity. Filtering here
+            // (deterministically, in code) rather than relying on a "don't report below X" prompt
+            // instruction is deliberate — guidelines text alone doesn't reliably suppress a
+            // severity the base prompt template itself lists as valid.
+            .Where(f => f.Severity <= minimumSeverity)
             .GroupBy(f => (f.File, f.Line, f.Category))
             .Select(g => g.First())
             .OrderBy(f => f.Severity)

@@ -1,3 +1,5 @@
+using AI.CodeReview.Domain;
+
 namespace AI.CodeReview.Api.Models;
 
 public sealed class ReviewRequest
@@ -34,4 +36,13 @@ public sealed class ReviewRequest
     /// repo in advance.
     /// </summary>
     public string? Guidelines { get; init; }
+
+    /// <summary>
+    /// Optional minimum severity to include in the results (inclusive) — findings less severe
+    /// than this are dropped before dedupe/sort and before posting to GitHub. Defaults to
+    /// <see cref="Severity.Low"/> (excludes only <see cref="Severity.Info"/>) when omitted.
+    /// Supplied per request rather than configured server-side, same reasoning as
+    /// <see cref="Guidelines"/> — different callers may want different thresholds.
+    /// </summary>
+    public Severity? MinimumSeverity { get; init; }
 }

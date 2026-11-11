@@ -77,9 +77,10 @@ public sealed class ReviewsController : ControllerBase
 
         try
         {
+            var minimumSeverity = request.MinimumSeverity ?? Severity.Low;
             var review = hasGitUrl
-                ? await _codeReviewService.ReviewFromUrlAsync(request.GitUrl!, request.Guidelines, cancellationToken)
-                : await _codeReviewService.ReviewAsync(request.Diff!, request.Guidelines, cancellationToken);
+                ? await _codeReviewService.ReviewFromUrlAsync(request.GitUrl!, request.Guidelines, minimumSeverity, cancellationToken)
+                : await _codeReviewService.ReviewAsync(request.Diff!, request.Guidelines, minimumSeverity, cancellationToken);
 
             var findingsBySource = review.Findings.ToLookup(f => f.Source);
 

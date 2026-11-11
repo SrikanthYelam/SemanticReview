@@ -174,7 +174,7 @@ public class CodeReviewOrchestratorTests
     }
 
     [Fact]
-    public async Task ReviewAsync_InfoSeverityFinding_IsFilteredOut()
+    public async Task ReviewAsync_DefaultMinimumSeverity_FiltersOutInfoFindingsOnly()
     {
         const string file = "src/Foo.cs";
         var parsed = new List<ParsedFileDiff>
@@ -192,12 +192,62 @@ public class CodeReviewOrchestratorTests
 
         var orchestrator = CreateOrchestrator(new FakeDiffParser(parsed), aiReviewer: aiReviewer);
 
+        // No minimumSeverity passed — defaults to Severity.Low, which is deliberately
+        // deterministic rather than relying on the AI reviewer to comply with a "don't report
+        // Info" prompt instruction — see CodeReviewOrchestrator.
         var result = await orchestrator.ReviewAsync("some diff");
 
-        // Info findings are deterministically dropped rather than relying on the AI reviewer to
-        // comply with a "don't report Info" prompt instruction — see CodeReviewOrchestrator.
         var finding = Assert.Single(result.Findings);
         Assert.Equal(lowFinding, finding);
+    }
+
+    [Fact]
+    public async Task ReviewAsync_MinimumSeverityInfo_IncludesInfoFindings()
+    {
+        const string file = "src/Foo.cs";
+        var parsed = new List<ParsedFileDiff>
+        {
+            new(file, new[] { new DiffAddedLine(1, "code") })
+        };
+
+        var infoFinding = new ReviewFinding(Severity.Info, ReviewCategory.CodeQuality, file, 1, "info", "s", FindingSource.Ai);
+        var lowFinding = new ReviewFinding(Severity.Low, ReviewCategory.Maintainability, file, 2, "low", "s", FindingSource.Ai);
+
+        var aiReviewer = new FakeAiCodeReviewer(new Dictionary<string, IReadOnlyList<ReviewFinding>>
+        {
+            [file] = [infoFinding, lowFinding]
+        });
+
+        var orchestrator = CreateOrchestrator(new FakeDiffParser(parsed), aiReviewer: aiReviewer);
+
+        var result = await orchestrator.ReviewAsync("some diff", minimumSeverity: Severity.Info);
+
+        Assert.Equal(2, result.Findings.Count);
+    }
+
+    [Fact]
+    public async Task ReviewAsync_StricterMinimumSeverity_AlsoFiltersOutLowerSeverities()
+    {
+        const string file = "src/Foo.cs";
+        var parsed = new List<ParsedFileDiff>
+        {
+            new(file, new[] { new DiffAddedLine(1, "code") })
+        };
+
+        var lowFinding = new ReviewFinding(Severity.Low, ReviewCategory.Maintainability, file, 1, "low", "s", FindingSource.Ai);
+        var mediumFinding = new ReviewFinding(Severity.Medium, ReviewCategory.Bug, file, 2, "medium", "s", FindingSource.Ai);
+        var highFinding = new ReviewFinding(Severity.High, ReviewCategory.Security, file, 3, "high", "s", FindingSource.Ai);
+
+        var aiReviewer = new FakeAiCodeReviewer(new Dictionary<string, IReadOnlyList<ReviewFinding>>
+        {
+            [file] = [lowFinding, mediumFinding, highFinding]
+        });
+
+        var orchestrator = CreateOrchestrator(new FakeDiffParser(parsed), aiReviewer: aiReviewer);
+
+        var result = await orchestrator.ReviewAsync("some diff", minimumSeverity: Severity.Medium);
+
+        Assert.Equal([highFinding, mediumFinding], result.Findings);
     }
 
     [Fact]

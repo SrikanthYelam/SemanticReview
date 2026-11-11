@@ -107,12 +107,15 @@ touching the orchestration logic.
 - Optional per-request review guidelines (`guidelines` on the request body) — free-form text,
   typically the contents of a caller's own markdown file, folded into both AI prompts alongside
   the built-in rules. See "Supplying project-specific guidelines" below.
+- Optional per-request minimum severity (`minimumSeverity` on the request body, e.g. `"Medium"`)
+  — findings less severe than this are dropped before dedupe/sort and before posting to GitHub.
+  Defaults to `Low` (excludes only `Info`) when omitted.
 - Per-file AI review calls run in parallel (bounded to 4 concurrent) instead of one file at a
   time, so multi-file diffs review noticeably faster.
 - Transient AI provider failures (timeouts, connection errors, `429`/`5xx`) are retried
   automatically with a short backoff before being treated as a failure for that file.
-- Findings from both sources are merged, deduplicated (same file/line/category), and sorted by
-  severity, then file, then line.
+- Findings from both sources are merged, deduplicated (same file/line/category), filtered to
+  `minimumSeverity` and above, and sorted by severity, then file, then line.
 - Opt-in GitHub write-back — set `postToGitHub` (with a `gitHubToken`) on a PR-URL request and
   findings are posted back as a single GitHub review: findings with a line number become inline
   comments, findings without one are listed in the review's summary instead of being dropped.
@@ -533,14 +536,19 @@ Logging__LogLevel__AI.CodeReview.Infrastructure.SemanticKernel.AiCallLoggingFilt
   the template would need a different Semantic Kernel template engine (e.g. Handlebars) just for
   one optional section. Pre-formatting the section (or an empty string) in C# and substituting it
   as a single `{{$customGuidelines}}` variable avoided that engine switch.
-- **`Info`-severity findings are dropped in code, not just asked for in `guidelines`** —
-  `CodeReviewOrchestrator` filters out any finding with `Severity.Info` before merge/dedupe. A
-  "don't report Info" line in `guidelines` only reduced how often the AI used that severity in
+- **A minimum severity is enforced in code, not just asked for in `guidelines`** —
+  `CodeReviewOrchestrator` filters out any finding less severe than `minimumSeverity` (an optional
+  per-request field, default `Low`, i.e. `Info` is excluded unless asked for) before merge/dedupe.
+  A "don't report Info" line in `guidelines` only reduced how often the AI used that severity in
   practice, it never reliably got it to zero — the base prompt template itself lists `Info` as a
   valid severity, and free-text guidelines appended later in the same prompt don't consistently
-  override that. The code-level filter is a deterministic backstop for this one specific,
-  low-value case; `guidelines` remains the mechanism for everything else (it's advisory by
-  nature, same as every other instruction in the prompt).
+  override that. The code-level filter is a deterministic backstop for severity specifically;
+  `guidelines` remains the mechanism for everything else (it's advisory by nature, same as every
+  other instruction in the prompt).
+- **`minimumSeverity` is a request field, not `appsettings.json`** — same reasoning as
+  `guidelines` and the GitHub write-back token: a server-wide config value can't satisfy two
+  callers who want different thresholds, and this API has no fixed opinion of its own to bake
+  into config.
 - **AI review calls run in parallel, bounded by a `SemaphoreSlim`** — the per-file loop used to
   `await` each file's AI call in sequence, so review latency scaled linearly with file count.
   Roslyn analysis (CPU-only, fast) still runs sequentially per file; only the AI calls (the
